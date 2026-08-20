@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: livrepay-novo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-livrepay}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      APP_DB_USER: ${APP_DB_USER:-livrepay_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+    ports:
+      # Exposto só em localhost: o banco não fica acessível pela rede.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - livrepay_novo_pgdata:/var/lib/postgresql/data
+      # Rodam em ordem alfabética na primeira inicialização: migrations e,
+      # por último (prefixo zzz), a criação da role de aplicação.
+      # Sem :ro no diretório — o Docker precisa criar o mountpoint do script
+      # abaixo dentro dele. O container não escreve nada aqui.
+      - ./db/migrations:/docker-entrypoint-initdb.d
+      - ./docker/initdb/zzz-app-role.sh:/docker-entrypoint-initdb.d/zzz-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-livrepay}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./server
+    container_name: livrepay-novo-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-livrepay}
+      # Role de aplicação: NÃO é dona das tabelas, então a RLS vale de verdade.
+      PGUSER: ${APP_DB_USER:-livrepay_app}
+      PGPASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no .env (32+ caracteres)}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+      ETHER_BASE_URL: ${ETHER_BASE_URL:-https://api.etherglobalassets.com.br}
+      ETHER_CLIENT_ID: ${ETHER_CLIENT_ID:-}
+      ETHER_CLIENT_SECRET: ${ETHER_CLIENT_SECRET:-}
+      ETHER_WEBHOOK_SECRET: ${ETHER_WEBHOOK_SECRET:-}
+    ports:
+      - "127.0.0.1:${API_PORT:-8081}:8080"
+
+volumes:
+  livrepay_novo_pgdata:

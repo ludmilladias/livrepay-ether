@@ -1,0 +1,2 @@
+- [Adaptação do .claude/ LivrePay](project_claude_adaptation.md) — estado da migração do framework genérico e lacunas de conhecimento (2026-08-20)
+- [Docs-fonte da raiz](reference_source_docs.md) — SECURITY.md, PENDING.md e ESTIMATIVA-INFRAESTRUTURA.md como fontes autoritativas

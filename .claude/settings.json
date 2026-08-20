@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(npm run lint *)",
+      "Bash(npm run test *)",
+      "Bash(npm run build *)",
+      "PowerShell(git status)",
+      "PowerShell(git diff *)",
+      "PowerShell(git log *)",
+      "PowerShell(npm run lint *)",
+      "PowerShell(npm run test *)",
+      "PowerShell(npm run build *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(npx prisma *)",
+      "Bash(git fetch *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.p12)",
+      "Read(./**/*.pfx)",
+      "Read(~/.ssh/**)",
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(rm -rf *)",
+      "PowerShell(git push --force *)",
+      "PowerShell(git reset --hard *)",
+      "PowerShell(Remove-Item * -Recurse * -Force *)"
+    ],
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(npm install *)",
+      "Bash(npm update *)",
+      "Bash(docker *)",
+      "Bash(kubectl *)",
+      "Bash(terraform *)",
+      "PowerShell(git commit *)",
+      "PowerShell(git push *)",
+      "PowerShell(npm install *)",
+      "PowerShell(npm update *)",
+      "PowerShell(docker *)",
+      "PowerShell(kubectl *)",
+      "PowerShell(terraform *)"
+    ],
+    "additionalDirectories": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\paf-pretool-guard.ps1\"",
+            "shell": "powershell",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "companyAnnouncements": [
+    "PAF ativo: movimentação real de dinheiro, produção e ações irreversíveis exigem aprovação."
+  ]
+}
