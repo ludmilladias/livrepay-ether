@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Shield, Car, Home, Heart, Briefcase, Search, Filter, Plus } from "lucide-react"
+import { PreviewBanner } from "@/components/shared/preview-banner"
 
 const Catalogo = () => {
   const seguros = [
@@ -108,6 +109,7 @@ const Catalogo = () => {
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <PreviewBanner />
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>

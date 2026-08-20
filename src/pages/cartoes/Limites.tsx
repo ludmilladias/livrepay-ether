@@ -5,6 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Settings, TrendingUp, AlertTriangle, CreditCard, DollarSign, Plus } from "lucide-react"
+import { PreviewBanner } from "@/components/shared/preview-banner"
 
 const Limites = () => {
   const cartoes = [
@@ -121,6 +122,7 @@ const Limites = () => {
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <PreviewBanner />
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>

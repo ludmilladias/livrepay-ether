@@ -11,6 +11,7 @@ import { paymentsRouter } from "./routes/payments.js";
 import { receivableContractsRouter, receivablesRouter } from "./routes/receivables.js";
 import { coreRouter } from "./routes/core.js";
 import { webhookRouter } from "./routes/webhook.js";
+import { adminRouter } from "./routes/admin.js";
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.use("/payments", paymentsRouter);
 app.use("/receivable-contracts", receivableContractsRouter);
 app.use("/receivables", receivablesRouter);
 app.use("/webhooks", webhookRouter);
+app.use("/admin", adminRouter);
 app.use("/", coreRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada" }));

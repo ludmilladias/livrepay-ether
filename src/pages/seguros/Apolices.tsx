@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Shield, Calendar, Download, Eye, RefreshCw, FileText, AlertTriangle } from "lucide-react"
+import { PreviewBanner } from "@/components/shared/preview-banner"
 
 const Apolices = () => {
   const apolices = [
@@ -101,6 +102,7 @@ const Apolices = () => {
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <PreviewBanner />
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>

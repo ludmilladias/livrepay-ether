@@ -13,8 +13,10 @@ import {
   Zap,
   PiggyBank,
   Building,
-  ChevronDown
+  ChevronDown,
+  ShieldCheck,
 } from "lucide-react"
+import { useProfile } from "@/hooks/use-profile"
 
 import {
   Sidebar,
@@ -95,6 +97,13 @@ const moduleItems = [
   },
 ]
 
+const adminItems = [
+  { title: "Visão Geral", url: "/admin" },
+  { title: "Verificação de Recebíveis", url: "/admin/recebiveis" },
+  { title: "Eventos do Provedor", url: "/admin/eventos-provedor" },
+  { title: "Auditoria", url: "/admin/auditoria" },
+]
+
 const quickActions = [
   { title: "Criar Link", icon: Link },
   { title: "Emitir Boleto", icon: FileBarChart },
@@ -107,7 +116,19 @@ export function AppSidebar() {
   const location = useLocation()
   const currentPath = location.pathname
   const collapsed = state === "collapsed"
-  
+  const { data: profile } = useProfile()
+
+  const roles = profile?.roles ?? []
+  const isStaff = roles.includes("admin") || roles.includes("compliance")
+  const isAdmin = roles.includes("admin")
+  const adminModule = {
+    title: "Administração",
+    icon: ShieldCheck,
+    items: isAdmin
+      ? [...adminItems, { title: "Usuários & Papéis", url: "/admin/usuarios" }]
+      : adminItems,
+  }
+
   const [openGroups, setOpenGroups] = useState<string[]>([])
 
   const isActive = (path: string) => currentPath === path
@@ -157,7 +178,7 @@ export function AppSidebar() {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu className="space-y-1">
-              {moduleItems.map((module) => {
+              {[...moduleItems, ...(isStaff ? [adminModule] : [])].map((module) => {
                 const isOpen = openGroups.includes(module.title) || isGroupActive(module.items)
                 return (
                   <SidebarMenuItem key={module.title}>

@@ -1,4 +1,5 @@
 import { verifyAccessToken } from "./tokens.js";
+import { withUser } from "./db.js";
 
 /** Erro de negócio com status HTTP — o handler global sabe traduzir. */
 export class ApiError extends Error {
@@ -25,6 +26,36 @@ export function requireAuth(req, _res, next) {
     // Mensagem genérica de propósito: não revelamos se expirou ou é inválido.
     next(new ApiError(401, "Sessão inválida ou expirada"));
   }
+}
+
+/**
+ * Exige que o usuário autenticado tenha ao menos uma das roles listadas.
+ * É camada de UX/roteamento na API — quem autoriza de verdade é a RLS e as
+ * funções SECURITY DEFINER que checam has_role() no banco; isto só evita
+ * que uma role sem nenhuma role especial chegue perto das rotas de staff.
+ */
+export function requireRole(...roles) {
+  return async (req, _res, next) => {
+    try {
+      const userRoles = await withUser(req.userId, async (client) => {
+        const { rows } = await client.query(
+          `select coalesce(array_agg(role::text), '{}') as roles
+             from public.user_roles where user_id = $1`,
+          [req.userId],
+        );
+        return rows[0]?.roles ?? [];
+      });
+
+      if (!roles.some((r) => userRoles.includes(r))) {
+        return next(new ApiError(403, "Acesso restrito à equipe"));
+      }
+
+      req.roles = userRoles;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 /** Valida o corpo com um schema zod e substitui req.body pelo dado limpo. */

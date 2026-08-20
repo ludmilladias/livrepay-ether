@@ -18,6 +18,9 @@ dist-ssr
 !.env.example
 nao-subir.md
 
+# Dumps de banco (dados financeiros reais) — nunca versionar
+db/backups/
+
 # Build info
 *.tsbuildinfo
 

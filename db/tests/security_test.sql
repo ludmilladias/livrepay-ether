@@ -808,20 +808,22 @@ begin
 end $$;
 
 -- --- T31: após verificação admin, antecipação credita corretamente --------
+-- Promove Alice a admin só para este teste conseguir chamar verify_receivable
+-- (troca de role precisa ser statement de topo — não é válido dentro de
+-- um bloco do $$ ... $$ em plpgsql).
+reset role;
+insert into public.user_roles (user_id, role)
+values ('11111111-1111-1111-1111-111111111111', 'admin')
+on conflict do nothing;
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+
 do $$
 declare _rec uuid; _bal_before bigint; _bal_after bigint;
 begin
   select id into _rec from public.receivables
   where user_id = '11111111-1111-1111-1111-111111111111' and status = 'scheduled'
   order by created_at desc limit 1;
-
-  -- promove Alice a admin só para este teste conseguir chamar verify_receivable
-  reset role;
-  insert into public.user_roles (user_id, role)
-  values ('11111111-1111-1111-1111-111111111111', 'admin')
-  on conflict do nothing;
-  set role authenticated;
-  set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
 
   perform public.verify_receivable(_rec);
   if (select verified_at from public.receivables where id = _rec) is null then
@@ -858,6 +860,150 @@ begin
     null;
   end;
   raise notice 'T32 OK: unique(user_id) impede segunda conta';
+end $$;
+
+-- --- T33: compliance verifica recebível de outro usuário; dono antecipa ---
+reset role;
+insert into auth.users (id, email, password_hash, raw_user_meta_data) values
+  ('33333333-3333-3333-3333-333333333333', 'carol@test.com', 'x', '{"full_name":"Carol"}'),
+  ('44444444-4444-4444-4444-444444444444', 'dave@test.com',  'x', '{"full_name":"Dave"}');
+insert into public.user_roles (user_id, role) values
+  ('33333333-3333-3333-3333-333333333333', 'compliance'),
+  ('44444444-4444-4444-4444-444444444444', 'support');
+
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222'; -- Bob
+do $$
+declare _contract uuid; _rec uuid;
+begin
+  insert into public.receivable_contracts (user_id, name, acquirer)
+  values ('22222222-2222-2222-2222-222222222222', 'Contrato Bob', 'Adquirente Y')
+  returning id into _contract;
+
+  insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+  values ('22222222-2222-2222-2222-222222222222', _contract, 200000, 190000, current_date + 3);
+
+  insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+  values ('22222222-2222-2222-2222-222222222222', _contract, 100000, 95000, current_date + 3);
+end $$;
+
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
+do $$
+declare _rec uuid;
+begin
+  -- verifica o primeiro recebível do Bob (compliance não é dona)
+  select id into _rec from public.receivables
+   where user_id = '22222222-2222-2222-2222-222222222222' and gross_cents = 200000;
+  perform public.verify_receivable(_rec);
+
+  if (select verified_at from public.receivables where id = _rec) is null then
+    raise exception 'T33 FALHOU: compliance nao conseguiu verificar recebivel de outro usuario';
+  end if;
+
+  raise notice 'T33 OK: compliance verifica recebivel de outro usuario';
+end $$;
+
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222'; -- Bob
+do $$
+declare _rec uuid; _bal_before bigint; _bal_after bigint;
+begin
+  select id into _rec from public.receivables
+   where user_id = '22222222-2222-2222-2222-222222222222' and gross_cents = 200000;
+
+  select balance_cents into _bal_before from public.accounts
+   where user_id = '22222222-2222-2222-2222-222222222222';
+
+  perform public.advance_receivable(_rec);
+
+  select balance_cents into _bal_after from public.accounts
+   where user_id = '22222222-2222-2222-2222-222222222222';
+
+  if _bal_after <> _bal_before + 190000 then
+    raise exception 'T33 FALHOU: saldo do Bob nao creditado corretamente (% -> %)', _bal_before, _bal_after;
+  end if;
+
+  raise notice 'T33 OK: Bob antecipa apos verificacao da compliance';
+end $$;
+
+-- --- T34: compliance recusa recebível; recusado não pode ser antecipado ---
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
+do $$
+declare _rec uuid;
+begin
+  select id into _rec from public.receivables
+   where user_id = '22222222-2222-2222-2222-222222222222' and gross_cents = 100000;
+
+  begin
+    perform public.reject_receivable(_rec, '');
+    raise exception 'T34 FALHOU: recusa sem motivo foi aceita!';
+  exception when others then
+    if sqlerrm not like '%motivo%' then raise; end if;
+  end;
+
+  perform public.reject_receivable(_rec, 'Contrato nao confere com a adquirente');
+
+  if (select status from public.receivables where id = _rec) <> 'cancelled' then
+    raise exception 'T34 FALHOU: status nao virou cancelled';
+  end if;
+  if (select rejected_by from public.receivables where id = _rec)
+     <> '33333333-3333-3333-3333-333333333333' then
+    raise exception 'T34 FALHOU: rejected_by nao registrado';
+  end if;
+
+  raise notice 'T34 OK: compliance recusa recebivel com motivo obrigatorio';
+end $$;
+
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222'; -- Bob
+do $$
+declare _rec uuid;
+begin
+  select id into _rec from public.receivables
+   where user_id = '22222222-2222-2222-2222-222222222222' and gross_cents = 100000;
+
+  begin
+    perform public.advance_receivable(_rec);
+    raise exception 'T34 FALHOU: antecipou recebivel recusado!';
+  exception when others then
+    if sqlerrm not like '%não pode ser antecipado%' and sqlerrm not like '%nao pode ser antecipado%'
+    then raise; end if;
+  end;
+
+  raise notice 'T34 OK: recebivel recusado nao pode ser antecipado';
+end $$;
+
+-- --- T35: role support NÃO ganha leitura ampla (sem policy nova) ----------
+set request.jwt.claim.sub = '44444444-4444-4444-4444-444444444444'; -- Dave (support)
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.receivables;
+  if _n <> 0 then
+    raise exception 'T35 FALHOU: support viu % recebiveis de outros usuarios', _n;
+  end if;
+  raise notice 'T35 OK: support nao tem leitura ampla de recebiveis';
+end $$;
+
+-- --- T36: admin_list_users() exige admin/compliance -----------------------
+do $$
+begin
+  begin
+    perform public.admin_list_users();
+    raise exception 'T36 FALHOU: support listou usuarios!';
+  exception when others then
+    if sqlerrm not like '%Apenas admin%' then raise; end if;
+  end;
+  raise notice 'T36 OK: admin_list_users nega quem nao e admin/compliance';
+end $$;
+
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.admin_list_users();
+  if _n < 4 then
+    raise exception 'T36 FALHOU: compliance deveria listar ao menos 4 usuarios, viu %', _n;
+  end if;
+  raise notice 'T36 OK: compliance lista usuarios';
 end $$;
 
 -- --- Resumo ---------------------------------------------------------------

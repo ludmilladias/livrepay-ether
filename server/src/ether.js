@@ -16,9 +16,30 @@ export class EtherError extends Error {
 
 let cachedToken = null; // { token, expiresAt }
 
+const TIMEOUT_MS = 15_000;
+
 function assertConfigured() {
   if (!config.ether.clientId || !config.ether.clientSecret) {
     throw new Error("Integração Ether não configurada (ETHER_CLIENT_ID/SECRET)");
+  }
+}
+
+/**
+ * fetch com timeout: sem isso, uma Ether lenta ou travada prende a requisição
+ * (e a conexão de banco que ela segura) indefinidamente.
+ */
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new EtherError(504, { message: `Ether não respondeu em ${TIMEOUT_MS}ms` });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -29,7 +50,7 @@ async function getToken() {
   }
   assertConfigured();
 
-  const response = await fetch(`${config.ether.baseUrl}/auth/authenticate`, {
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}/auth/authenticate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -52,7 +73,7 @@ async function getToken() {
 
 async function call(method, path, body, retry = true) {
   const token = await getToken();
-  const response = await fetch(`${config.ether.baseUrl}${path}`, {
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,

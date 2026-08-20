@@ -53,6 +53,8 @@ sem um `SET ROLE` explícito, obrigando cada trecho de código a declarar em que
 | Auditoria | `audit_log` append-only via trigger em charges/payments/accounts/cards/user_roles; leitura só admin |
 | PCI DSS | Cartões guardam só `last4` + token do emissor; PAN/CVV jamais tocam o banco |
 | Senhas isoladas | Schema `auth` inacessível a `authenticated`; hashes só via `service_role` |
+| Conta única | `unique(user_id)` em `accounts` — todo o código assumia "uma conta por usuário" implicitamente (`order by created_at limit 1`); agora é garantia do banco, não convenção |
+| Grants mínimos | `authenticated` não tem INSERT/UPDATE/DELETE em `transactions`, `card_transactions`, `audit_log` nem `provider_events` — só quem realmente escreve nessas tabelas (função SECURITY DEFINER ou `service_role`) pode |
 
 ### API
 
@@ -101,12 +103,45 @@ de que gera uma linha digitável de verdade sem antes decidir outro provedor par
 aceita as duas origens, mas o ledger do LIVREPAY só existe em BRL — pagar com cripto exigiria
 uma conta cripto própria, que não existe neste sistema. Hoje `payBoleto()` sempre usa `FIAT`.
 
+**Valor real do boleto é conferido antes de debitar.** A linha digitável não expõe o valor de
+forma confiável no nosso lado — só a Ether sabe o valor real. Até 2026-08-20, o pagamento de
+boleto debitava o `amount_cents` que o usuário digitou ao criar o pagamento e pagava à Ether o
+valor real do boleto, que podia ser diferente (perda para o LivrePay, ou cobrança indevida do
+usuário). Agora `POST /payments/:id/execute` chama `simulateBoleto()` (`isSimulation: true`)
+antes de debitar e rejeita a execução (409) se o valor real (`boleto.netAmount`) divergir do
+valor declarado — nada é debitado nesse caso.
+
+**Tarifa do PIX é lançada no ledger.** A Ether cobra `feeAmount` sobre saques PIX; até
+2026-08-20 esse valor só aparecia na resposta da API, nunca no ledger — o saldo do LivrePay
+divergiria silenciosamente do saldo real na Ether a cada transferência. Agora a tarifa é
+debitada via `provider_settle()` após a confirmação. Se essa segunda chamada falhar (ex.: saldo
+já no limite), o PIX **já saiu** e não é revertido — o log grava `FALHA CRÍTICA: tarifa PIX não
+registrada no ledger` para acerto manual.
+
 ### Barreira crítica: quem pode creditar
 
 `provider_settle()`, `provider_confirm_charge()`, `provider_complete_payment()` e
 `provider_fail_payment()` têm `EXECUTE` **revogado de `authenticated`** e concedido só a
 `service_role`. Sem isso, um usuário logado chamaria a função e se creditaria à vontade.
 Os testes **T14** e **T26** existem para quebrar a suíte se alguém remover essa revogação.
+
+`process_transaction()` (a RPC genérica de crédito/débito) também tem `EXECUTE` revogado de
+`authenticated` desde 2026-08-20 — até então, `/receivables/:id/advance` a chamava direto sob a
+role do próprio usuário para creditar `net_cents` **digitado pelo próprio usuário na criação do
+recebível**, sem nenhuma verificação externa. Qualquer usuário podia criar um recebível com valor
+arbitrário e antecipá-lo, creditando dinheiro que nunca existiu. Hoje a antecipação passa por
+`advance_receivable()` (SECURITY DEFINER), que só libera o crédito se `receivables.verified_at`
+estiver preenchido — e isso só pode ser setado por `verify_receivable()`, restrito a quem tem a
+role `admin`. **Recebíveis continuam sendo dado auto-declarado pelo usuário**: a verificação
+administrativa hoje é manual (não há conciliação automática com adquirente/contrato); não
+libere `verify_receivable()` em massa sem checar a origem real do crédito. O teste **T2b** quebra
+a suíte se `process_transaction()` voltar a ser chamável direto por `authenticated`; **T30/T31**
+cobrem o fluxo de verificação.
+
+`provider_confirm_charge()` também passou a validar que o valor liquidado no webhook
+(`_paid_amount_cents`) é **igual** ao valor cobrado (`charges.amount_cents`) antes de creditar —
+sem isso, um segredo de webhook vazado credita qualquer valor para uma cobrança existente. Teste
+**T29**.
 
 ### Webhook
 
@@ -117,8 +152,11 @@ Os testes **T14** e **T26** existem para quebrar a suíte se alguém remover ess
   grava `error` para reprocessamento, sem perder o evento.
 
 > ⚠️ **Limitação**: a Ether só permite configurar a URL do webhook — não há assinatura HMAC
-> documentada. Aceitamos o segredo via header `x-webhook-secret` (preferido) ou `?secret=`.
-> Segredo em query string pode aparecer em log de proxy — **peça HMAC à Ether** e migre.
+> documentada. Aceitamos o segredo só via header `x-webhook-secret` (desde 2026-08-20 — o
+> fallback por `?secret=` foi removido porque segredo em query string pode aparecer em log de
+> proxy/CDN). Se a Ether não suportar header customizado na configuração dela, é preciso
+> consultar o suporte antes de reabrir esse fallback. **Peça HMAC à Ether** e migre quando
+> disponível.
 
 ## Pagamentos — saída de dinheiro
 
@@ -154,14 +192,16 @@ a própria chamada de estorno falhar; aí o log grava `FALHA CRÍTICA`.
 ## Testes
 
 ```bash
-npm run db:test              # 29 asserções de segurança no banco
-bash server/tests/e2e.sh     # 37 asserções ponta a ponta na API
+npm run db:test              # 32 asserções de segurança no banco
+bash server/tests/e2e.sh     # 48 asserções ponta a ponta na API
+cd server && npm run test:ether  # retry/timeout do cliente Ether contra mock (nunca a Ether real)
 ```
 
 `db:test` sobe um Postgres 16 descartável, aplica todas as migrations e valida: onboarding,
 isolamento por RLS, atomicidade de crédito/débito, saldo insuficiente, movimentação de conta
 alheia, imutabilidade do ledger nas duas camadas, escalação de privilégio, auditoria,
-idempotência do provedor, double-spend, atomicidade da folha e estorno único.
+idempotência do provedor, double-spend, atomicidade da folha, estorno único, rejeição de
+liquidação com valor divergente e recebível não creditar sem verificação administrativa.
 
 `e2e.sh` valida contra a stack real: cadastro/login, bloqueio de senha fraca e duplicada,
 rotação de refresh token com detecção de reuso, e — o mais importante — **isolamento entre
@@ -191,7 +231,9 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 3. TLS obrigatório no proxy à frente da API (HSTS incluso).
 4. `ALLOWED_ORIGINS` só com os domínios oficiais.
 5. Rotacionar `JWT_SECRET` invalida todas as sessões — planeje a janela.
-6. Backup do volume `livrepay_novo_pgdata` com teste de restauração periódico.
+6. Backup com `npm run db:backup` (gera dump em `db/backups/`, fora do volume — nunca versione o
+   diretório) agendado por cron/scheduler externo, **com teste de restauração periódico**
+   (`bash db/backup.sh --restore ARQUIVO` contra um banco descartável, nunca contra produção).
 7. Monitorar nos logs: `FALHA CRÍTICA`, `Privilégio negado pelo banco` (tentativa de burlar RLS).
 
 ### Regras para evoluir o código

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Plus, Clock, CheckCircle, XCircle, FileText, Calculator } from "lucide-react"
+import { PreviewBanner } from "@/components/shared/preview-banner"
 
 const Cotacoes = () => {
   const cotacoes = [
@@ -100,6 +101,7 @@ const Cotacoes = () => {
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <PreviewBanner />
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>

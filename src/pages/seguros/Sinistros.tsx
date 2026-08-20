@@ -5,6 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Plus, AlertTriangle, Clock, CheckCircle, XCircle, FileText, Camera, Upload } from "lucide-react"
+import { PreviewBanner } from "@/components/shared/preview-banner"
 
 const Sinistros = () => {
   const sinistros = [
@@ -108,6 +109,7 @@ const Sinistros = () => {
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <PreviewBanner />
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>

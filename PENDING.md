@@ -2,13 +2,20 @@
 
 > Snapshot do estado real do código em 2026-08-11 (atualizado após completar a integração
 > bancária com a Ether). Cada item foi verificado nos arquivos, não estimado.
+>
+> **2026-08-20**: diagnóstico completo com os 11 agentes do `.claude/` encontrou e corrigiu duas
+> falhas financeiras críticas (auto-crédito via `/receivables/:id/advance` e liquidação de
+> cobrança sem conferência de valor) + 4 achados médios (ver SECURITY.md, seção "Barreira
+> crítica: quem pode creditar" e tabela "Banco de dados"). Migration
+> `20260820000000_close_settlement_gaps.sql`, testes T2b e T29-T32 novos (32 no total).
 
 ## Como retomar uma sessão
 
 ```bash
 docker compose up -d --build   # .env já existe e está preenchido, inclusive Ether
-npm run db:test              # 29 asserções no banco
-bash server/tests/e2e.sh     # 48 asserções na API
+npm run db:test              # 32 asserções no banco
+bash server/tests/e2e.sh     # 48 asserções na API (NUNCA rode contra a Ether de produção sem querer mover dinheiro real)
+cd server && npm run test:ether && cd ..  # retry/timeout do cliente Ether contra mock
 npm run typecheck && npm run dev
 ```
 
@@ -73,8 +80,8 @@ disponível.
 
 ## 2. Módulos com dado 100% fictício (maior pendência restante)
 
-Estas 12 páginas ainda são as telas originais do Lovable: arrays hardcoded no componente,
-sem tabela no banco, sem rota na API.
+Estas 12 páginas ainda são as telas geradas originalmente (fora deste ciclo de correções): arrays
+hardcoded no componente, sem tabela no banco, sem rota na API.
 
 ### Recebíveis (`src/pages/recebiveis/`) — ✅ completo (Agenda, Contratos, Adiantamento)
 
@@ -175,5 +182,5 @@ existem — não precisam de tabela nova, só de rotas novas com `GROUP BY` por 
 O `.env` deste projeto (`LIVREPAY SISTEMA NOVO/.env`, fora do git) já está preenchido com:
 senhas de banco geradas, `JWT_SECRET`, `ETHER_WEBHOOK_SECRET` gerado, e
 `ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` copiados do projeto `livrepaymongo8-main`. O `.env`
-antigo (Supabase/Lovable, já obsoleto) foi substituído — não existe mais backup dele, era
-config morta sem uso no código atual.
+antigo (Supabase, do backend no-code substituído por Postgres puro) foi substituído — não existe
+mais backup dele, era config morta sem uso no código atual.

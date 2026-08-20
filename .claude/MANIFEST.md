@@ -63,5 +63,6 @@ Adaptado para LivrePay em: 2026-08-20
 - `.claude/tests/Agent-Evaluation-Scenarios.md`
 - `.claude/tests/Guardrail-Tests.md`
 - `CLAUDE.md`
-- `INSTALL.md`
 - `README.md`
+- `SECURITY.md`
+- `PENDING.md`

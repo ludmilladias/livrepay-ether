@@ -5,6 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Plus, CreditCard, Eye, Lock, Unlock, Copy, Settings, Shield } from "lucide-react"
+import { PreviewBanner } from "@/components/shared/preview-banner"
 
 const Virtuais = () => {
   const cartoes = [
@@ -135,6 +136,7 @@ const Virtuais = () => {
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <PreviewBanner />
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>

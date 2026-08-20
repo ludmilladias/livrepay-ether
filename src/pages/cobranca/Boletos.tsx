@@ -7,10 +7,10 @@ const Boletos = () => (
     kind="boleto"
     icon={FileText}
     title="Boletos"
-    subtitle="Emita e acompanhe boletos bancários registrados"
-    createLabel="Novo Boleto"
-    createTitle="Novo Boleto"
-    emptyMessage="Nenhum boleto emitido ainda. Crie o primeiro usando o botão acima."
+    subtitle="Registro local de boletos a cobrar — a Ether paga boletos, mas não emite linha digitável para cobrar terceiros"
+    createLabel="Novo Registro"
+    createTitle="Novo Registro de Boleto"
+    emptyMessage="Nenhum boleto registrado ainda. Crie o primeiro usando o botão acima."
     showCustomer
     extraFields={[
       {
@@ -25,9 +25,11 @@ const Boletos = () => (
         header: "Linha digitável",
         render: (charge) => {
           const line = chargePayload(charge).linha_digitavel
-          return (
-            <span className="font-mono text-xs">
-              {typeof line === "string" ? line : "—"}
+          return typeof line === "string" ? (
+            <span className="font-mono text-xs">{line}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground" title="Sem provedor de emissão de boleto integrado">
+              não gerada
             </span>
           )
         },

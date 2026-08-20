@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
-    "db:test": "bash db/tests/run-tests.sh"
+    "db:test": "bash db/tests/run-tests.sh",
+    "db:backup": "bash db/backup.sh"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

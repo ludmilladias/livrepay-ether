@@ -14,9 +14,9 @@ export function Logo({ className, size = "md" }: LogoProps) {
 
   return (
     <div className={cn("flex items-center gap-2", className)}>
-      <img 
-        src="/lovable-uploads/7effc3b8-3526-4509-800f-a7709fa9cae7.png" 
-        alt="LivrePay" 
+      <img
+        src="/brand/livrepay-logo.png"
+        alt="LivrePay"
         className={cn("object-contain", sizeClasses[size])}
       />
     </div>

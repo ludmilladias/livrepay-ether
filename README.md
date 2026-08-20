@@ -1,73 +1,48 @@
-# Welcome to your Lovable project
+# LivrePay
 
-## Project info
+Plataforma financeira: cobrança (PIX, boleto, link, assinatura), pagamentos (transferência PIX,
+folha em lote, contas e tributos), recebíveis, cartões e relatórios — com Postgres puro (RLS)
+como última linha de segurança e a [Ether Global Assets](https://etherglobalassets.com.br) como
+provedor bancário (PIX e pagamento de boleto).
 
-**URL**: https://lovable.dev/projects/cdd43f3c-3e0d-4299-aa6f-a70b72daa5f1
+- [SECURITY.md](SECURITY.md) — modelo de segurança. Leia antes de tocar em dinheiro, autenticação
+  ou na integração com a Ether.
+- [PENDING.md](PENDING.md) — checkpoint do estado real do código (o que é dado real, o que ainda
+  é tela de demonstração).
+- [CLAUDE.md](CLAUDE.md) — comandos e arquitetura para quem for desenvolver no repositório.
 
-## How can I edit this code?
+## Stack
 
-There are several ways of editing your application.
+- Front: React + Vite + TypeScript + shadcn-ui + Tailwind.
+- API: Node.js/Express (`server/`), validação com zod.
+- Banco: Postgres 16 puro, sem BaaS — RLS deny-by-default em toda tabela de negócio.
+- Provedor bancário: Ether Global Assets (PIX, boleto, webhook).
 
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/cdd43f3c-3e0d-4299-aa6f-a70b72daa5f1) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
+## Rodando localmente
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+cp .env.example .env    # preencha senhas, JWT_SECRET (32+ caracteres) e credenciais da Ether
+docker compose up -d --build   # Postgres + API
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+cd server && npm install && cd ..
+npm install
+npm run dev              # front em http://localhost:8080, API em http://localhost:8081
 ```
 
-**Edit a file directly in GitHub**
+Testes:
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+```sh
+npm run db:test                    # segurança do banco (RLS, ledger, double-spend...)
+bash server/tests/e2e.sh           # ponta a ponta contra a stack real — NUNCA em produção
+cd server && npm run test:ether    # retry/timeout do cliente Ether, contra mock
+```
 
-**Use GitHub Codespaces**
+## Comandos
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/cdd43f3c-3e0d-4299-aa6f-a70b72daa5f1) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+```sh
+npm run dev          # dev server (Vite)
+npm run build        # build de produção
+npm run lint          # eslint
+npm run typecheck     # tsc --noEmit
+npm run db:backup     # dump do Postgres (bash db/backup.sh)
+```

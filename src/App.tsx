@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/components/auth/protected-route";
+import { RequireRole } from "@/components/auth/require-role";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { TopBar } from "@/components/layout/top-bar";
@@ -44,6 +45,13 @@ import ExtratosCartoes from "./pages/cartoes/Extratos";
 import ExtratosRelatorios from "./pages/relatorios/Extratos";
 import Conciliacao from "./pages/relatorios/Conciliacao";
 import Financeiro from "./pages/relatorios/Financeiro";
+
+// Administração (admin/compliance)
+import AdminOverview from "./pages/admin/Overview";
+import VerificacaoRecebiveis from "./pages/admin/VerificacaoRecebiveis";
+import EventosProvedor from "./pages/admin/EventosProvedor";
+import Auditoria from "./pages/admin/Auditoria";
+import Usuarios from "./pages/admin/Usuarios";
 
 const queryClient = new QueryClient();
 
@@ -113,7 +121,50 @@ const AppShell = () => (
                   <Route path="/relatorios/extratos" element={<ExtratosRelatorios />} />
                   <Route path="/relatorios/conciliacao" element={<Conciliacao />} />
                   <Route path="/relatorios/financeiro" element={<Financeiro />} />
-                  
+
+                  {/* Administração — role admin/compliance no banco decide de verdade,
+                      isto é só roteamento (ver RequireRole). */}
+                  <Route
+                    path="/admin"
+                    element={
+                      <RequireRole roles={["admin", "compliance"]}>
+                        <AdminOverview />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/admin/recebiveis"
+                    element={
+                      <RequireRole roles={["admin", "compliance"]}>
+                        <VerificacaoRecebiveis />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/admin/eventos-provedor"
+                    element={
+                      <RequireRole roles={["admin", "compliance"]}>
+                        <EventosProvedor />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/admin/auditoria"
+                    element={
+                      <RequireRole roles={["admin", "compliance"]}>
+                        <Auditoria />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/admin/usuarios"
+                    element={
+                      <RequireRole roles={["admin"]}>
+                        <Usuarios />
+                      </RequireRole>
+                    }
+                  />
+
                   {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
                   <Route path="*" element={<NotFound />} />
                 </Routes>
