@@ -12,7 +12,8 @@ pg.types.setTypeParser(pg.types.builtins.INT8, (value) => {
   return n;
 });
 
-// DO Managed Postgres exige TLS; sem isso o pool não conecta em produção.
+// Banco gerenciado (DO) exige TLS; localhost via docker-compose não tem
+// certificado, então só habilita SSL fora de dev/local.
 const sslMode = process.env.PGSSLMODE ?? (config.isProduction ? "require" : "disable");
 const poolConfig = {
   ...config.db,
