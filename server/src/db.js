@@ -12,7 +12,14 @@ pg.types.setTypeParser(pg.types.builtins.INT8, (value) => {
   return n;
 });
 
-export const pool = new pg.Pool(config.db);
+// DO Managed Postgres exige TLS; sem isso o pool não conecta em produção.
+const sslMode = process.env.PGSSLMODE ?? (config.isProduction ? "require" : "disable");
+const poolConfig = {
+  ...config.db,
+  ssl: sslMode === "disable" ? false : { rejectUnauthorized: false },
+};
+
+export const pool = new pg.Pool(poolConfig);
 
 pool.on("error", (err) => {
   console.error("Erro inesperado no pool do Postgres", err);
