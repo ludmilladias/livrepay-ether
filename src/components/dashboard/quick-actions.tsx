@@ -19,8 +19,8 @@ const quickActions = [
     to: "/cobranca/links",
   },
   {
-    title: "Emitir Boleto",
-    description: "Boleto bancário tradicional",
+    title: "Emitir BoléPIX",
+    description: "Cobrança com vencimento via PIX",
     icon: FileBarChart,
     color: "bg-primary",
     to: "/cobranca/boletos",

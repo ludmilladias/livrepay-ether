@@ -43,7 +43,7 @@ const moduleItems = [
     icon: Receipt,
     items: [
       { title: "Links de Pagamento", url: "/cobranca/links" },
-      { title: "Boletos", url: "/cobranca/boletos" },
+      { title: "BoléPIX", url: "/cobranca/boletos" },
       { title: "PIX Cobrança", url: "/cobranca/pix" },
       { title: "Assinaturas", url: "/cobranca/assinaturas" },
     ]
@@ -106,7 +106,7 @@ const adminItems = [
 
 const quickActions = [
   { title: "Criar Link", icon: Link },
-  { title: "Emitir Boleto", icon: FileBarChart },
+  { title: "Emitir BoléPIX", icon: FileBarChart },
   { title: "PIX Cobrança", icon: Zap },
   { title: "Simular Adiantamento", icon: PiggyBank },
 ]

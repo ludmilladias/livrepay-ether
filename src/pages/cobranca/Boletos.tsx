@@ -6,31 +6,32 @@ const Boletos = () => (
   <ChargesView
     kind="boleto"
     icon={FileText}
-    title="Boletos"
-    subtitle="Registro local de boletos a cobrar — a Ether paga boletos, mas não emite linha digitável para cobrar terceiros"
-    createLabel="Novo Registro"
-    createTitle="Novo Registro de Boleto"
-    emptyMessage="Nenhum boleto registrado ainda. Crie o primeiro usando o botão acima."
+    title="BoléPIX"
+    subtitle="Cobrança com vencimento e dados do cliente — pagamento via PIX QR Code (sem linha digitável)"
+    createLabel="Novo BoléPIX"
+    createTitle="Nova Cobrança BoléPIX"
+    emptyMessage="Nenhum BoléPIX emitido ainda. Crie o primeiro usando o botão acima."
     showCustomer
+    canEmit
     extraFields={[
       {
         key: "instrucoes",
-        label: "Instruções ao sacado",
+        label: "Instruções ao pagador",
         type: "text",
         placeholder: "Ex: Não receber após o vencimento",
       },
     ]}
     extraColumns={[
       {
-        header: "Linha digitável",
+        header: "PIX",
         render: (charge) => {
-          const line = chargePayload(charge).linha_digitavel
-          return typeof line === "string" ? (
-            <span className="font-mono text-xs">{line}</span>
-          ) : (
-            <span className="text-xs text-muted-foreground" title="Sem provedor de emissão de boleto integrado">
-              não gerada
+          const code = chargePayload(charge).pix_copy_paste
+          return typeof code === "string" ? (
+            <span className="font-mono text-xs truncate max-w-[120px] inline-block" title={code}>
+              {code.slice(0, 20)}…
             </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">emita para gerar</span>
           )
         },
       },
