@@ -1,4 +1,4 @@
-import express from "express";
+himport express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -51,8 +51,9 @@ app.get("/health", async (_req, res) => {
   try {
     await pool.query("select 1");
     res.json({ status: "ok" });
-  } catch {
-    res.status(503).json({ status: "degraded", database: "unreachable" });
+  } catch (err) {
+        console.error("[health] DB unreachable:", err.message);
+        res.status(503).json({ status: "degraded", database: "unreachable", error: err.message });
   }
 });
 
