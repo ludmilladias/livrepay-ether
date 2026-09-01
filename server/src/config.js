@@ -64,4 +64,16 @@ export const config = {
     clientSecret: optional("ETHER_CLIENT_SECRET", ""),
     webhookSecret: optional("ETHER_WEBHOOK_SECRET", ""),
   },
+
+  // Sem isso, rate limit vira MemoryStore por instância: com 2+ réplicas atrás
+  // do load balancer, cada uma conta separado e o teto deixa de valer de verdade.
+  redisUrl: optional("REDIS_URL", ""),
 };
+
+if (isProduction && !config.redisUrl) {
+  console.warn(
+    "REDIS_URL não definida em produção — rate limit está em memória por instância " +
+      "(não é compartilhado entre réplicas). Configure o Redis gerenciado antes de escalar " +
+      "para 2+ instâncias.",
+  );
+}

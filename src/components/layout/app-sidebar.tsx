@@ -129,18 +129,17 @@ export function AppSidebar() {
       : adminItems,
   }
 
-  const [openGroups, setOpenGroups] = useState<string[]>([])
+  const [openOverrides, setOpenOverrides] = useState<Record<string, boolean>>({})
 
   const isActive = (path: string) => currentPath === path
   const isGroupActive = (items: readonly { url: string }[]) =>
     items.some(item => isActive(item.url))
-  
-  const toggleGroup = (title: string) => {
-    setOpenGroups(prev => 
-      prev.includes(title) 
-        ? prev.filter(g => g !== title)
-        : [...prev, title]
-    )
+
+  const toggleGroup = (title: string, defaultOpen: boolean) => {
+    setOpenOverrides(prev => ({
+      ...prev,
+      [title]: !(prev[title] ?? defaultOpen),
+    }))
   }
 
   const getNavCls = (active: boolean) =>
@@ -179,10 +178,11 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu className="space-y-1">
               {[...moduleItems, ...(isStaff ? [adminModule] : [])].map((module) => {
-                const isOpen = openGroups.includes(module.title) || isGroupActive(module.items)
+                const defaultOpen = isGroupActive(module.items)
+                const isOpen = openOverrides[module.title] ?? defaultOpen
                 return (
                   <SidebarMenuItem key={module.title}>
-                    <Collapsible open={isOpen} onOpenChange={() => toggleGroup(module.title)}>
+                    <Collapsible open={isOpen} onOpenChange={() => toggleGroup(module.title, defaultOpen)}>
                       <CollapsibleTrigger asChild>
                         <SidebarMenuButton 
                           className={`w-full justify-between h-10 ${getNavCls(isGroupActive(module.items))}`}

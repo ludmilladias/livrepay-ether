@@ -1,6 +1,7 @@
 import { KPICards } from "@/components/dashboard/kpi-cards";
 import { QuickActions } from "@/components/dashboard/quick-actions";
 import { AlertsSection } from "@/components/dashboard/alerts-section";
+import { CashflowChart } from "@/components/dashboard/cashflow-chart";
 
 const Index = () => {
   return (
@@ -16,6 +17,11 @@ const Index = () => {
       {/* KPIs */}
       <div className="mb-8">
         <KPICards />
+      </div>
+
+      {/* Fluxo de caixa */}
+      <div className="mb-8">
+        <CashflowChart />
       </div>
 
       {/* Quick Actions */}

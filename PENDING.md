@@ -72,9 +72,11 @@ ser testados por mim** de forma alguma (ver seção de segurança do agente) —
 manualmente, com valor pequeno.
 
 **Sem assinatura HMAC no webhook** — a Ether só permite configurar a URL, sem header
-customizado documentado no OpenAPI estudado. Hoje o segredo vai por header
-`x-webhook-secret` ou `?secret=` na query. Peça HMAC ao suporte da Ether e migre quando
-disponível.
+customizado documentado no OpenAPI estudado. O segredo hoje só é aceito via header
+`x-webhook-secret` — o fallback anterior de token na URL (`POST /ether/:token`) foi removido
+porque path/query de proxy e CDN costumam ir parar em log, o que vazaria o segredo. Se a Ether
+não suportar header customizado na configuração dela, falar com o suporte antes de reabrir
+esse fallback. Peça HMAC ao suporte da Ether e migre quando disponível.
 
 ---
 
@@ -120,12 +122,22 @@ integrada ainda — bloqueio de negócio, não técnico).
 (`last4` + token do emissor, nunca PAN/CVV). **Bloqueio de negócio**: a Ether não tem
 endpoint de cartão no OpenAPI estudado — precisa decidir o emissor antes de qualquer código.
 
-### Relatórios (`src/pages/relatorios/`)
-- `Extratos.tsx`, `Conciliacao.tsx`, `Financeiro.tsx`
+### Relatórios (`src/pages/relatorios/`) — ✅ completo (Extratos, Conciliação, Financeiro)
 
-**Sem schema dedicado.** São agregações sobre `transactions`, `charges` e `payments` que já
-existem — não precisam de tabela nova, só de rotas novas com `GROUP BY` por período/tipo
-(`server/src/routes/reports.js`, ainda não criado).
+Rota `server/src/routes/reports.js` + hook `src/hooks/use-reports.ts` — dados reais agregados
+sobre `transactions`/`charges`/`payments`, sem tabela nova. Sem verificação e2e (o rito
+`server/tests/e2e.sh` ainda não cobre `/reports/*`), então **confirmar em ambiente rodando**
+antes de considerar totalmente encerrado.
+
+- `GET /reports/cashflow` — fluxo de caixa 30 dias (dashboard do cliente, `Index.tsx`).
+- `GET /reports/statement` — extrato real do ledger por período (`Extratos.tsx`).
+- `GET /reports/reconciliation` — checagem de integridade cobrança/pagamento × lançamento no
+  ledger (`Conciliacao.tsx`) — não é conciliação contra extrato bancário externo (a Ether não
+  expõe esse feed), é auditoria interna de que `process_transaction()` gravou tudo.
+- `GET /reports/financials` — DRE simplificada por mês/tipo (`Financeiro.tsx`).
+- `GET /admin/reports/volume` — volume agregado de todas as contas para o dashboard admin,
+  liberado por nova policy `transactions: staff le todas` (só leitura, staff = admin/compliance)
+  em `db/migrations/20260821010000_reports_staff_read.sql`.
 
 ## 3. Segurança — itens abertos
 
@@ -170,8 +182,9 @@ existem — não precisam de tabela nova, só de rotas novas com `GROUP BY` por 
 1. **Resolver o status da conta na Ether** (`AUTH_KEY_001` — ver seção 1). É bloqueador para
    qualquer teste real adicional; sem isso, o resto pode ser feito mas não confirmado
    ponta a ponta contra o provedor de verdade.
-2. ~~Recebíveis~~ — ✅ feito nesta sessão (Agenda, Contratos, Adiantamento).
-3. **Relatórios** — sem schema novo, só queries agregadas.
+2. ~~Recebíveis~~ — ✅ feito (Agenda, Contratos, Adiantamento).
+3. ~~Relatórios~~ — ✅ feito (Extratos, Conciliação, Financeiro) — falta rodar e2e num
+   ambiente com docker disponível para confirmar ponta a ponta.
 4. **Decidir emissor de cartão** (bloqueio de produto) antes de tocar em Cartões.
 5. **Seguros** — depende de decisão de negócio sobre cotação.
 6. Só depois disso, itens de infraestrutura (CI, deploy, observabilidade — ver

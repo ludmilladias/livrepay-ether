@@ -138,9 +138,11 @@ export async function runProviderEvent(storedId, { eventType, payload, eventId }
  * Webhook da Ether. Rota pública (o provedor não tem JWT de usuário), então a
  * autenticação é por segredo compartilhado.
  *
- * Aceita duas formas de autenticação (a que chegar primeiro):
- *  1. Header `x-webhook-secret` (preferível se o provedor suportar)
- *  2. Token no path: POST /ether/:token (fallback — a Ether só configura URL)
+ * Só aceitamos o segredo via header — nunca via query string ou path da URL:
+ * qualquer um dos dois pode aparecer em log de proxy/CDN. Se a Ether não
+ * suportar header customizado na configuração dela, o suporte precisa ser
+ * consultado antes de reabrir um fallback assim.
+ * TODO: migrar para HMAC quando a Ether oferecer.
  *
  * Garantias:
  *  - Persistimos o payload ANTES de processar: se o processamento falhar, o
@@ -148,17 +150,14 @@ export async function runProviderEvent(storedId, { eventType, payload, eventId }
  *  - Idempotência por (provider, event_id) UNIQUE: reentrega não credita 2x.
  */
 webhookRouter.post(
-  ["/ether", "/ether/:token"],
+  "/ether",
   asyncRoute(async (req, res) => {
     if (!config.ether.webhookSecret) {
       console.error("ETHER_WEBHOOK_SECRET não configurado — rejeitando tudo");
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    // Aceita segredo via header ou via path param (a Ether não documenta
-    // suporte a headers customizados, então o token na URL é o fallback).
-    const provided =
-      req.get("x-webhook-secret") || req.params.token || "";
+    const provided = req.get("x-webhook-secret") ?? "";
     if (!safeEqual(provided, config.ether.webhookSecret)) {
       return res.status(401).json({ error: "unauthorized" });
     }

@@ -168,29 +168,22 @@ receivablesRouter.post(
   "/:id/advance",
   asyncRoute(async (req, res) => {
     const result = await withUser(req.userId, async (client) => {
-      const { rows } = await client.query(`select public.advance_receivable($1) as receivable`, [
+      // "select * from fn(...)" — NUNCA "select (fn(...)).*": esta segunda
+      // forma faz o Postgres chamar a função uma vez por coluna do tipo
+      // composto (armadilha conhecida), o que aqui creditaria o valor mais
+      // de uma vez. "from fn(...)" chama a função exatamente uma vez.
+      const { rows } = await client.query(`select * from public.advance_receivable($1)`, [
         req.params.id,
       ]);
-      return rows[0].receivable;
+      return rows[0];
     });
     res.json(result);
   }),
 );
 
-/**
- * Verifica um recebível (admin): confirma que o valor corresponde a um
- * crédito real (contrato, conciliação com adquirente etc.) antes de liberar
- * a antecipação. `verify_receivable()` rejeita quem não tiver a role admin.
- */
-receivablesRouter.post(
-  "/:id/verify",
-  asyncRoute(async (req, res) => {
-    const result = await withUser(req.userId, async (client) => {
-      const { rows } = await client.query(`select public.verify_receivable($1) as receivable`, [
-        req.params.id,
-      ]);
-      return rows[0].receivable;
-    });
-    res.json(result);
-  }),
-);
+// Verificação/recusa de recebível são ações de staff — ver
+// POST /admin/receivables/:id/verify e /reject em routes/admin.js. Não
+// duplicamos a rota aqui: verify_receivable()/reject_receivable() já
+// rejeitam quem não tem role admin/compliance no banco, mas expor o mesmo
+// caminho em dois routers sem o requireRole da Express é superfície extra
+// sem motivo.

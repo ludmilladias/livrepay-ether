@@ -56,6 +56,13 @@ All colors MUST be HSL.
 
     --radius: 0.75rem;
 
+    /* Cores de gráfico (entradas/saídas) — validadas com scripts/validate_palette.js
+       (dataviz skill) para separação CVD e contraste em modo claro E escuro.
+       Fixas em :root (não redefinidas em .dark) porque a validação cobriu os
+       dois modos com o mesmo par de cores. */
+    --chart-in: 180 80% 35%;
+    --chart-out: 0 84% 60%;
+
     /* Sidebar Colors */
     --sidebar-background: 260 60% 35%;
     --sidebar-foreground: 0 0% 98%;

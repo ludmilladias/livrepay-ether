@@ -87,6 +87,36 @@ Faixas para a fase "crescimento inicial" (milhares de clientes, centenas-milhare
 | Secrets manager (Infisical cloud, tier baixo) | $0–20 | R$ 0–110 |
 | **Total infraestrutura recorrente** | **$172–566** | **≈ R$ 950–3.100** |
 
+### 3.1 Dimensionamento técnico (CPU / memória / disco) — base 2000 clientes
+
+A tabela acima só nomeia o serviço e uma faixa de preço; abaixo está o tamanho real por trás de
+cada faixa, calculado para **2000 clientes cadastrados, ~700 ativos/dia** (ver premissas ao
+final desta seção) e a versão equivalente para teste/homologação.
+
+| Recurso | Produção (recomendado) | Teste/Homologação (recomendado) |
+|---|---|---|
+| **API — instância (DO App Platform)** | `professional-xs` (1 vCPU / 1 GB) por réplica; subir para `professional-s` (1 vCPU / 2 GB) se CPU sustentado > 65% | `professional-xs` (1 vCPU / 1 GB) |
+| **API — réplicas** | min 2 / max 4 | min 0–1 (só em sprint ativo) / max 1 |
+| **API — pool de conexão Postgres (`PGPOOL_MAX`)** | 12 por réplica (4×12 = 48 conexões via PgBouncer) | 5 |
+| **Postgres — plano DO Managed** | `db-s-2vcpu-4gb` (2 vCPU / 4 GB RAM), **com standby (HA)** | `db-s-1vcpu-1gb` (1 vCPU / 1 GB), sem HA |
+| **Postgres — disco (incluído no plano)** | 60 GB SSD (~10–15 GB/ano de crescimento no ledger → folga até ~2029) | 10–15 GB |
+| **Postgres — conexões máx do plano** | ~97 diretas (reservar ~25 para migrations/monitoramento); via PgBouncer o app não esbarra nisso | ~25 |
+| **PgBouncer** (obrigatório a partir de 2ª réplica de API) | 1 vCPU / 512 MB, modo `transaction` | dispensável com 1 réplica |
+| **Redis — plano DO Managed** | `db-s-1vcpu-1gb` (1 vCPU / 1 GB) — rate limit compartilhado + dedupe webhook + cache token Ether | `db-s-1vcpu-1gb` compartilhado ou instância local, TTL curto |
+| **Load Balancer** | gerenciado pela DO, sem dimensionamento manual de CPU | dispensável (acesso direto à instância) |
+| **Spaces (object storage)** | 50–100 GB inicial (docs KYC, comprovantes, exports) | 5–10 GB |
+
+**Premissas do cálculo:** ~35% dos 2000 clientes ativos por dia útil (≈700), ~25 chamadas/sessão,
+2 sessões/dia → ~35 mil req/dia, pico de ~12–15 req/s em horário comercial; ~1,5 transação
+financeira/cliente ativo/dia (~1.000 operações/dia, pico < 1 req/s — o gargalo é leitura de
+extrato/relatório, não escrita); ~3 mil eventos de webhook Ether/dia, tipicamente em rajada após
+qualquer instabilidade do provedor, o que justifica isolar o Redis/PgBouncer da carga de leitura
+normal. Cada request de negócio ocupa uma conexão do pool durante toda a transação
+(`BEGIN`→`set_config`→`SET LOCAL ROLE`→query→`COMMIT`); com latência ao Postgres gerenciado em
+~1–2 ms, uma conexão sustenta ~30 req/s, então 12 conexões/réplica cobrem o pico com folga de
+~20x. Revisar esta tabela a cada dobra de escala (de "milhares" para "dezenas de milhares" de
+clientes), como já indicado na seção 8.
+
 Fora da infra recorrente:
 
 | Item | Custo único/anual | Observação |

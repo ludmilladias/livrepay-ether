@@ -1,12 +1,13 @@
 import { useState } from "react"
-import { 
-  Search, 
-  Bell, 
-  ChevronDown, 
+import {
+  Search,
+  Bell,
+  ChevronDown,
   Building2,
-  Zap,
   AlertTriangle,
-  Check
+  Info,
+  CheckCircle,
+  Clock,
 } from "lucide-react"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
@@ -27,46 +28,42 @@ import {
 } from "@/components/ui/popover"
 import { Badge } from "@/components/ui/badge"
 import { useAuth } from "@/hooks/use-auth"
+import { useAccountBalance } from "@/hooks/use-payments"
+import { useAlerts, type AlertType } from "@/hooks/use-alerts"
 
-const notifications = [
-  {
-    id: 1,
-    type: "fraud",
-    title: "Tentativa de fraude detectada",
-    description: "PIX de R$ 15.000 bloqueado automaticamente",
-    time: "2 min atrás",
-    urgent: true,
-  },
-  {
-    id: 2,
-    type: "kyc",
-    title: "KYC pendente",
-    description: "Cliente João Silva aguarda verificação",
-    time: "15 min atrás",
-    urgent: false,
-  },
-  {
-    id: 3,
-    type: "payment",
-    title: "Boletos vencendo hoje",
-    description: "12 boletos vencem nas próximas 2 horas",
-    time: "1 hora atrás",
-    urgent: false,
-  },
-]
+function formatCents(cents: number): string {
+  return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+}
 
-const accounts = [
-  { id: "main", name: "Conta Principal", balance: "R$ 1.247.350,42" },
-  { id: "savings", name: "Conta Poupança", balance: "R$ 89.562,18" },
-  { id: "business", name: "Conta Empresarial", balance: "R$ 2.847.291,75" },
-]
+function alertIcon(type: AlertType) {
+  switch (type) {
+    case "urgent":
+      return <AlertTriangle className="h-4 w-4 text-destructive mt-0.5" />
+    case "warning":
+      return <Clock className="h-4 w-4 text-warning mt-0.5" />
+    case "success":
+      return <CheckCircle className="h-4 w-4 text-success mt-0.5" />
+    default:
+      return <Info className="h-4 w-4 text-primary mt-0.5" />
+  }
+}
+
+function relativeTime(iso: string): string {
+  const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000)
+  if (minutes < 1) return "agora"
+  if (minutes < 60) return `${minutes} min atrás`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h atrás`
+  return `${Math.floor(hours / 24)}d atrás`
+}
 
 export function TopBar() {
   const { user, signOut } = useAuth()
-  const [selectedAccount, setSelectedAccount] = useState(accounts[0])
   const [searchQuery, setSearchQuery] = useState("")
+  const { data: balanceCents } = useAccountBalance()
+  const { data: alerts } = useAlerts()
 
-  const unreadCount = notifications.filter(n => n.urgent).length
+  const unreadCount = alerts?.filter((a) => !a.read).length ?? 0
   const displayName = user?.full_name ?? user?.email ?? "Usuário"
   const initials = displayName
     .split(/[\s@.]+/)
@@ -93,61 +90,25 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-4">
-        {/* PIX/API Status */}
-        <div className="flex items-center gap-2 text-sm">
-          <div className="flex items-center gap-1">
-            <div className="w-2 h-2 bg-success rounded-full"></div>
-            <span className="text-muted-foreground">PIX</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-2 h-2 bg-success rounded-full"></div>
-            <span className="text-muted-foreground">API</span>
+        {/* Conta — hoje é sempre uma única conta por usuário (unique(user_id) no banco) */}
+        <div className="flex items-center gap-2 rounded-md border px-3 py-2 min-w-[200px]">
+          <Building2 className="h-4 w-4 text-muted-foreground" />
+          <div className="text-left">
+            <div className="text-sm font-medium">Conta Principal</div>
+            <div className="text-xs text-muted-foreground">
+              {balanceCents === undefined ? "…" : formatCents(balanceCents)}
+            </div>
           </div>
         </div>
 
-        {/* Account Selector */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" className="gap-2 min-w-[200px] justify-between">
-              <div className="flex items-center gap-2">
-                <Building2 className="h-4 w-4" />
-                <div className="text-left">
-                  <div className="text-sm font-medium">{selectedAccount.name}</div>
-                  <div className="text-xs text-muted-foreground">{selectedAccount.balance}</div>
-                </div>
-              </div>
-              <ChevronDown className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-56">
-            <DropdownMenuLabel>Contas</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {accounts.map((account) => (
-              <DropdownMenuItem
-                key={account.id}
-                onClick={() => setSelectedAccount(account)}
-                className="cursor-pointer"
-              >
-                <div className="flex items-center justify-between w-full">
-                  <div>
-                    <div className="font-medium">{account.name}</div>
-                    <div className="text-xs text-muted-foreground">{account.balance}</div>
-                  </div>
-                  {selectedAccount.id === account.id && <Check className="h-4 w-4" />}
-                </div>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        {/* Notifications */}
+        {/* Notifications — alertas reais do backend (GET /alerts) */}
         <Popover>
           <PopoverTrigger asChild>
             <Button variant="outline" size="icon" className="relative">
               <Bell className="h-4 w-4" />
               {unreadCount > 0 && (
-                <Badge 
-                  variant="destructive" 
+                <Badge
+                  variant="destructive"
                   className="absolute -top-1 -right-1 h-5 w-5 p-0 flex items-center justify-center text-xs"
                 >
                   {unreadCount}
@@ -159,24 +120,27 @@ export function TopBar() {
             <div className="space-y-2">
               <h4 className="font-medium text-sm">Notificações</h4>
               <div className="space-y-2">
-                {notifications.map((notification) => (
-                  <div 
-                    key={notification.id} 
+                {(!alerts || alerts.length === 0) && (
+                  <p className="text-sm text-muted-foreground py-2">Nenhum alerta no momento.</p>
+                )}
+                {alerts?.slice(0, 10).map((alert) => (
+                  <div
+                    key={alert.id}
                     className={`p-3 rounded-lg border ${
-                      notification.urgent ? 'border-destructive/20 bg-destructive/5' : 'border-border'
+                      alert.type === "urgent" ? "border-destructive/20 bg-destructive/5" : "border-border"
                     }`}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex items-start gap-2">
-                        {notification.type === 'fraud' && <AlertTriangle className="h-4 w-4 text-destructive mt-0.5" />}
-                        {notification.type === 'kyc' && <Zap className="h-4 w-4 text-warning mt-0.5" />}
-                        {notification.type === 'payment' && <Bell className="h-4 w-4 text-primary mt-0.5" />}
+                        {alertIcon(alert.type)}
                         <div className="flex-1">
-                          <p className="text-sm font-medium">{notification.title}</p>
-                          <p className="text-xs text-muted-foreground">{notification.description}</p>
+                          <p className="text-sm font-medium">{alert.title}</p>
+                          <p className="text-xs text-muted-foreground">{alert.description}</p>
                         </div>
                       </div>
-                      <span className="text-xs text-muted-foreground">{notification.time}</span>
+                      <span className="text-xs text-muted-foreground shrink-0 ml-2">
+                        {relativeTime(alert.created_at)}
+                      </span>
                     </div>
                   </div>
                 ))}

@@ -4,6 +4,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { config } from "./config.js";
 import { pool } from "./db.js";
+import { sharedRateLimitStore } from "./rateLimitStore.js";
 import { errorHandler } from "./middleware.js";
 import { authRouter } from "./routes/auth.js";
 import { chargesRouter } from "./routes/charges.js";
@@ -12,6 +13,7 @@ import { receivableContractsRouter, receivablesRouter } from "./routes/receivabl
 import { coreRouter } from "./routes/core.js";
 import { webhookRouter } from "./routes/webhook.js";
 import { adminRouter } from "./routes/admin.js";
+import { reportsRouter } from "./routes/reports.js";
 
 const app = express();
 
@@ -41,6 +43,7 @@ app.use(
     limit: 120,
     standardHeaders: true,
     legacyHeaders: false,
+    store: sharedRateLimitStore("rl:global:"),
   }),
 );
 
@@ -60,6 +63,7 @@ app.use("/receivable-contracts", receivableContractsRouter);
 app.use("/receivables", receivablesRouter);
 app.use("/webhooks", webhookRouter);
 app.use("/admin", adminRouter);
+app.use("/reports", reportsRouter);
 app.use("/", coreRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada" }));

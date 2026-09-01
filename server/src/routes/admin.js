@@ -25,7 +25,9 @@ adminRouter.get(
         client.query(
           `select count(*)::int as n from public.provider_events where error is not null`,
         ),
-        client.query(`select count(*)::int as n from public.profiles`),
+        // profiles só tem policy "usuário lê o próprio" — sem admin_list_users()
+        // (SECURITY DEFINER) isto contaria só a própria conta do admin.
+        client.query(`select count(*)::int as n from public.admin_list_users()`),
       ]);
       return {
         pending_receivables: pendingReceivables.rows[0].n,
@@ -34,6 +36,36 @@ adminRouter.get(
       };
     });
     res.json(counts);
+  }),
+);
+
+// --- Volume (gráfico do dashboard admin) -------------------------------------
+//
+// Agrega public.transactions de TODOS os usuários por dia, últimos 30 dias.
+// Só existe dado aqui porque a migration 20260821010000 deu ao staff uma
+// policy adicional de leitura ampla em transactions (nunca escrita — isso
+// continua só pela RPC process_transaction()).
+adminRouter.get(
+  "/reports/volume",
+  asyncRoute(async (req, res) => {
+    const rows = await withUser(req.userId, async (client) => {
+      const result = await client.query(
+        `select day::date as day,
+                coalesce(sum(amount_cents) filter (where type = 'credit'), 0)::bigint as in_cents,
+                coalesce(sum(amount_cents) filter (where type = 'debit'), 0)::bigint as out_cents
+           from generate_series(
+                  date_trunc('day', now()) - interval '29 days',
+                  date_trunc('day', now()),
+                  interval '1 day'
+                ) as day
+           left join public.transactions t
+             on date_trunc('day', t.created_at) = day
+          group by day
+          order by day`,
+      );
+      return result.rows;
+    });
+    res.json(rows);
   }),
 );
 
@@ -63,10 +95,12 @@ adminRouter.post(
   "/receivables/:id/verify",
   asyncRoute(async (req, res) => {
     const result = await withUser(req.userId, async (client) => {
-      const { rows } = await client.query(`select public.verify_receivable($1) as receivable`, [
+      // "select * from fn(...)" — nunca "select (fn(...)).*", que chama a
+      // função uma vez por coluna (ver comentário em routes/receivables.js).
+      const { rows } = await client.query(`select * from public.verify_receivable($1)`, [
         req.params.id,
       ]);
-      return rows[0].receivable;
+      return rows[0];
     });
     res.json(result);
   }),
@@ -81,11 +115,11 @@ adminRouter.post(
   validate(rejectBody),
   asyncRoute(async (req, res) => {
     const result = await withUser(req.userId, async (client) => {
-      const { rows } = await client.query(
-        `select public.reject_receivable($1, $2) as receivable`,
-        [req.params.id, req.body.reason],
-      );
-      return rows[0].receivable;
+      const { rows } = await client.query(`select * from public.reject_receivable($1, $2)`, [
+        req.params.id,
+        req.body.reason,
+      ]);
+      return rows[0];
     });
     res.json(result);
   }),

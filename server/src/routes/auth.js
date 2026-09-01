@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { config } from "../config.js";
 import { authQuery, withUser } from "../db.js";
+import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import {
   signAccessToken,
@@ -22,6 +23,7 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Muitas tentativas. Tente novamente em alguns minutos." },
+  store: sharedRateLimitStore("rl:login:"),
 });
 
 const credentials = z.object({

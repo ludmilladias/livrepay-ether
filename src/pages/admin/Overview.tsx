@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ShieldCheck, AlertTriangle, Users } from "lucide-react"
 import { useAdminOverview } from "@/hooks/use-admin"
+import { VolumeChart } from "@/components/admin/volume-chart"
 
 const Overview = () => {
   const { data, isLoading, isError } = useAdminOverview()
@@ -72,6 +73,8 @@ const Overview = () => {
           </CardContent>
         </Card>
       </div>
+
+      <VolumeChart />
     </div>
   )
 }

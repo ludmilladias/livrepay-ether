@@ -17,6 +17,7 @@ dist-ssr
 .env.*
 !.env.example
 nao-subir.md
+nao-subir-infra.md
 
 # Dumps de banco (dados financeiros reais) — nunca versionar
 db/backups/
