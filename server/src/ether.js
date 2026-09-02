@@ -3,6 +3,12 @@ import { config } from "./config.js";
 /**
  * Cliente da API Ether Global Assets.
  * Roda apenas no servidor — clientId/clientSecret jamais vão ao browser.
+ *
+ * Dois níveis de autenticação:
+ *  1. Participant (LivrePay): clientId/clientSecret — usado para operações
+ *     administrativas e para criar sub-contas.
+ *  2. Sub-conta (cliente final): Cognito — cada cliente tem seu próprio
+ *     token JWT obtido via AWS Cognito User Pool.
  */
 
 export class EtherError extends Error {
@@ -14,7 +20,7 @@ export class EtherError extends Error {
   }
 }
 
-let cachedToken = null; // { token, expiresAt }
+let cachedParticipantToken = null; // { token, expiresAt }
 
 const TIMEOUT_MS = 15_000;
 
@@ -43,10 +49,14 @@ async function fetchWithTimeout(url, options) {
   }
 }
 
-async function getToken() {
+// ---------------------------------------------------------------------------
+// Participant (conta principal do LivrePay na Ether)
+// ---------------------------------------------------------------------------
+
+async function getParticipantToken() {
   // Margem de 60s: evita usar token que expira no meio da chamada.
-  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) {
-    return cachedToken.token;
+  if (cachedParticipantToken && cachedParticipantToken.expiresAt > Date.now() + 60_000) {
+    return cachedParticipantToken.token;
   }
   assertConfigured();
 
@@ -64,27 +74,119 @@ async function getToken() {
     throw new EtherError(response.status, body);
   }
 
-  cachedToken = {
+  cachedParticipantToken = {
     token: body.access_token,
     expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000,
   };
-  return cachedToken.token;
+  return cachedParticipantToken.token;
 }
 
-async function call(method, path, body, retry = true) {
-  const token = await getToken();
+// ---------------------------------------------------------------------------
+// Sub-conta (cliente final) — autenticação via Cognito
+// ---------------------------------------------------------------------------
+
+/**
+ * Autentica um cliente final (sub-conta) via Cognito e retorna o token JWT
+ * para chamar endpoints protegidos da Ether como esse usuário.
+ *
+ * @param {string} email — e-mail do usuário no Cognito
+ * @param {string} password — senha temporária/definitiva do Cognito
+ */
+export async function authenticateSubAccount(email, password) {
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}/auth/authenticate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      clientId: config.ether.cognitoAppClientId,
+      username: email,
+      password,
+    }),
+  });
+
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body?.access_token) {
+    throw new EtherError(response.status, body);
+  }
+  return body.access_token;
+}
+
+/**
+ * Cria uma sub-conta (cliente final) na Ether via onboarding.
+ * Usa o token do participant para autenticar.
+ *
+ * @param {object} data — dados do cliente (nome, email, CPF/CNPJ, endereço, etc.)
+ */
+export async function createSubAccount(data) {
+  const token = await getParticipantToken();
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/profile-data`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      ...data,
+      tenantUrl: config.ether.tenantUrl,
+    }),
+  });
+
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new EtherError(response.status, body);
+  return body;
+}
+
+/**
+ * Aceita os termos de uso de uma sub-conta.
+ */
+export async function acceptTerms(userId) {
+  const token = await getParticipantToken();
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/${userId}/accept-terms`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new EtherError(response.status, body);
+  }
+}
+
+/**
+ * Declaração de não-PEP de uma sub-conta.
+ */
+export async function declareNonPep(userId) {
+  const token = await getParticipantToken();
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/${userId}/pep-declaration`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ isPep: false }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new EtherError(response.status, body);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Chamadas protegidas (com token do participant OU da sub-conta)
+// ---------------------------------------------------------------------------
+
+async function call(method, path, body, retry = true, token = null) {
+  const authToken = token ?? await getParticipantToken();
   const response = await fetchWithTimeout(`${config.ether.baseUrl}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
   // Token revogado antes da hora: limpa o cache e tenta uma única vez.
-  if (response.status === 401 && retry) {
-    cachedToken = null;
+  if (response.status === 401 && retry && !token) {
+    cachedParticipantToken = null;
     return call(method, path, body, false);
   }
 
@@ -94,23 +196,27 @@ async function call(method, path, body, retry = true) {
   return parsed;
 }
 
+// ---------------------------------------------------------------------------
+// Operações bancárias (participant-level)
+// ---------------------------------------------------------------------------
+
 /** PIX dinâmico para depósito (valor em centavos). */
-export function createPixDeposit(amountCents, expirationSeconds, idempotencyKey) {
+export function createPixDeposit(amountCents, expirationSeconds, idempotencyKey, subAccountToken = null) {
   return call("POST", "/pix/deposit", {
     amount: amountCents,
     expirationTime: expirationSeconds,
     ...(idempotencyKey ? { idempotencyKey } : {}),
-  });
+  }, true, subAccountToken);
 }
 
 /** Saque PIX para chave fixa. */
-export function withdrawPixToKey(amountCents, pixKeyType, pixKey, description) {
+export function withdrawPixToKey(amountCents, pixKeyType, pixKey, description, subAccountToken = null) {
   return call("POST", "/pix/withdraw/pix-key", {
     amount: amountCents,
     pixKeyType,
     pixKey,
     ...(description ? { description } : {}),
-  });
+  }, true, subAccountToken);
 }
 
 /**
@@ -119,14 +225,14 @@ export function withdrawPixToKey(amountCents, pixKeyType, pixKey, description) {
  * LIVREPAY é só em BRL, então pagar com CRYPTO exigiria uma conta cripto
  * própria que ainda não existe neste sistema.
  */
-export function payBoleto(digitableLine, { paymentMethod = "FIAT", isSimulation = false, cryptoToken, network } = {}) {
+export function payBoleto(digitableLine, { paymentMethod = "FIAT", isSimulation = false, cryptoToken, network } = {}, subAccountToken = null) {
   return call("POST", "/boletos/pay-boleto", {
     digitableLine,
     paymentMethod,
     isSimulation,
     ...(cryptoToken ? { cryptoToken } : {}),
     ...(network ? { network } : {}),
-  });
+  }, true, subAccountToken);
 }
 
 /**
@@ -146,6 +252,43 @@ export async function simulateBoleto(digitableLine) {
 export function getBoletoStatus(identifier) {
   return call("GET", `/boletos/${identifier}`);
 }
+
+/** Registra uma chave PIX para o participant ou sub-conta. */
+export function createPixKey(pixKey, pixKeyType, subAccountToken = null) {
+  return call("POST", "/pix/keys", {
+    pixKey,
+    pixKeyType,
+    preview: false,
+  }, true, subAccountToken);
+}
+
+/** Lista chaves PIX registradas. */
+export function listPixKeys(subAccountToken = null) {
+  return call("GET", "/pix/keys", undefined, true, subAccountToken);
+}
+
+/** Consulta saldo da conta. */
+export function getAccountBalance(subAccountToken = null) {
+  return call("GET", "/account-balance", undefined, true, subAccountToken);
+}
+
+/** Consulta status da conta (KYC). */
+export function getAccountStatus(userId) {
+  return call("GET", `/users/${userId}/check-account`);
+}
+
+// ---------------------------------------------------------------------------
+// Webhook
+// ---------------------------------------------------------------------------
+
+/** Gera o secret de webhook (mostrado apenas uma vez pela Ether). */
+export function generateWebhookSecret() {
+  return call("POST", "/webhooks/secret");
+}
+
+// ---------------------------------------------------------------------------
+// Utilitários
+// ---------------------------------------------------------------------------
 
 /** Chave de idempotência aceita pela Ether: <=25 chars alfanuméricos. */
 export function idempotencyKeyFrom(uuid) {

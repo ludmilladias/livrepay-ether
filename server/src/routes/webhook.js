@@ -135,14 +135,13 @@ export async function runProviderEvent(storedId, { eventType, payload, eventId }
 }
 
 /**
- * Webhook da Ether. Rota pública (o provedor não tem JWT de usuário), então a
- * autenticação é por segredo compartilhado.
+ * Webhook da Ether. Rota pública (o provedor não tem JWT de usuário).
  *
- * Só aceitamos o segredo via header — nunca via query string ou path da URL:
- * qualquer um dos dois pode aparecer em log de proxy/CDN. Se a Ether não
- * suportar header customizado na configuração dela, o suporte precisa ser
- * consultado antes de reabrir um fallback assim.
- * TODO: migrar para HMAC quando a Ether oferecer.
+ * Validação HMAC-SHA256:
+ *  - Header: X-Signature no formato "t=<timestamp>,v1=<hex_digest>"
+ *  - Assinatura: HMAC-SHA256(secret, "<timestamp>.<rawBody>")
+ *  - Replay: timestamps com mais de 5 minutos são rejeitados.
+ *  - Comparação em tempo constante para evitar timing attacks.
  *
  * Garantias:
  *  - Persistimos o payload ANTES de processar: se o processamento falhar, o
@@ -157,9 +156,43 @@ webhookRouter.post(
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    const provided = req.get("x-webhook-secret") ?? "";
-    if (!safeEqual(provided, config.ether.webhookSecret)) {
-      return res.status(401).json({ error: "unauthorized" });
+    const signatureHeader = req.get("x-signature");
+    if (signatureHeader) {
+      // HMAC-SHA256: valida assinatura e protege contra replay.
+      const parts = {};
+      for (const pair of signatureHeader.split(",")) {
+        const [key, value] = pair.split("=", 2);
+        if (key && value) parts[key.trim()] = value.trim();
+      }
+
+      const timestamp = parts.t;
+      const signature = parts.v1;
+
+      if (!timestamp || !signature) {
+        return res.status(401).json({ error: "assinatura malformada" });
+      }
+
+      // Replay protection: rejeita eventos com mais de 5 minutos.
+      const age = Math.abs(Date.now() / 1000 - Number(timestamp));
+      if (age > 300) {
+        return res.status(401).json({ error: "assinatura expirada" });
+      }
+
+      const rawBody = JSON.stringify(req.body);
+      const expected = crypto
+        .createHmac("sha256", config.ether.webhookSecret)
+        .update(`${timestamp}.${rawBody}`)
+        .digest("hex");
+
+      if (!safeEqual(signature, expected)) {
+        return res.status(401).json({ error: "assinatura inválida" });
+      }
+    } else {
+      // Fallback: comparação simples de segredo compartilhado (legado).
+      const provided = req.get("x-webhook-secret") ?? "";
+      if (!safeEqual(provided, config.ether.webhookSecret)) {
+        return res.status(401).json({ error: "unauthorized" });
+      }
     }
 
     const envelope = req.body ?? {};

@@ -177,6 +177,8 @@ authRouter.get(
         // role::text é necessário: o driver não sabe desserializar array de
         // enum customizado e devolveria a string literal "{viewer}".
         `select p.id, p.full_name, p.tax_id, p.phone,
+                p.ether_user_id, p.ether_account_status, p.ether_pix_key,
+                p.ether_pix_key_type,
                 coalesce(array_agg(r.role::text) filter (where r.role is not null), '{}') as roles
            from public.profiles p
            left join public.user_roles r on r.user_id = p.id
@@ -189,5 +191,199 @@ authRouter.get(
 
     if (!profile) throw new ApiError(404, "Perfil não encontrado");
     res.json(profile);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Onboarding Ether — cria sub-conta do cliente final na Ether
+// ---------------------------------------------------------------------------
+
+const onboardingSchema = z.object({
+  taxId: z.string().regex(/^\d{11}$|^\d{14}$/, "CPF ou CNPJ inválido"),
+  personType: z.enum(["FISICA", "JURIDICA"]),
+  phone: z.string().regex(/^\d{10,11}$/, "Telefone com DDD (apenas números)"),
+  dateBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data de nascimento (YYYY-MM-DD)"),
+  address: z.object({
+    zipcode: z.string().regex(/^\d{8}$/, "CEP (apenas números)"),
+    street: z.string().min(1).max(200),
+    number: z.string().min(1).max(20),
+    complement: z.string().max(100).optional(),
+    district: z.string().min(1).max(100),
+    city: z.string().min(1).max(100),
+    state: z.string().length(2),
+  }),
+  // PJ: dados corporativos adicionais
+  companyInfo: z.object({
+    tradeName: z.string().min(1).max(140),
+    openingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    revenue: z.string().regex(/^\d+\.?\d*$/, "Faturamento mensal"),
+    responsible: z.object({
+      fullName: z.string().min(1).max(140),
+      email: z.string().email(),
+      phone: z.string().regex(/^\d{10,11}$/),
+    }),
+  }).optional(),
+});
+
+/**
+ * POST /auth/onboarding — inicia o processo de abertura de sub-conta na Ether.
+ *
+ * Fluxo:
+ * 1. Usuário preenche dados KYC no frontend
+ * 2. Criamos a sub-conta na Ether (POST /users/profile-data)
+ * 3. Aceitamos termos + declaração PEP automaticamente
+ * 4. Retornamos o status e os documentos pendentes para upload
+ *
+ * O usuário ainda precisa enviar documentos (RG, comprovante, etc.) via
+ * /kyc/submissions — o upload é feito pelo frontend, mas a rota aqui
+ * retorna o checklist para orientar o usuário.
+ */
+authRouter.post(
+  "/onboarding",
+  requireAuth,
+  validate(onboardingSchema),
+  asyncRoute(async (req, res) => {
+    const { createSubAccount, acceptTerms, declareNonPep } = await import("../ether.js");
+    const b = req.body;
+
+    // Verifica se já fez onboarding.
+    const existing = await withUser(req.userId, async (client) => {
+      const { rows } = await client.query(
+        `select ether_user_id, ether_account_status from public.profiles where id = $1`,
+        [req.userId],
+      );
+      return rows[0];
+    });
+
+    if (existing?.ether_user_id) {
+      throw new ApiError(409, "Onboarding já realizado. Status: " + existing.ether_account_status);
+    }
+
+    // Monta o payload para a Ether.
+    const user = await withUser(req.userId, async (client) => {
+      const { rows } = await client.query(
+        `select p.full_name, u.email from public.profiles p
+           join auth.users u on u.id = p.id
+          where p.id = $1`,
+        [req.userId],
+      );
+      return rows[0];
+    });
+
+    const etherPayload = {
+      name: user.full_name,
+      email: user.email,
+      profile: {
+        taxId: b.taxId,
+        personType: b.personType,
+        phone: b.phone,
+        dateBirth: b.dateBirth,
+      },
+      address: b.address,
+      document: {
+        type: b.personType === "FISICA" ? "CARTEIRA_IDENTIDADE" : "CONTRATO_SOCIAL",
+      },
+      ...(b.companyInfo ? { companyInfo: b.companyInfo } : {}),
+    };
+
+    let etherResult;
+    try {
+      etherResult = await createSubAccount(etherPayload);
+    } catch (error) {
+      console.error("Ether recusou o onboarding", {
+        userId: req.userId,
+        detail: error?.body ?? String(error),
+      });
+      throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
+    }
+
+    const etherUserId = etherResult.userId;
+    if (!etherUserId) {
+      throw new ApiError(502, "Ether não retornou ID do usuário");
+    }
+
+    // Aceita termos e declaração PEP automaticamente.
+    try {
+      await acceptTerms(etherUserId);
+      await declareNonPep(etherUserId);
+    } catch (error) {
+      console.warn("Termos/PEP falharam após onboarding bem-sucedido", {
+        etherUserId,
+        detail: error?.body ?? String(error),
+      });
+      // Não bloqueia: o usuário pode aceitar depois via painel da Ether.
+    }
+
+    // Grava o vínculo no banco (service_role pode escrever ether_*).
+    const { withService } = await import("../db.js");
+    await withService(async (client) => {
+      await client.query(
+        `update public.profiles
+            set ether_user_id = $2, ether_account_status = $3, tax_id = $4, phone = $5
+          where id = $1`,
+        [req.userId, etherUserId, etherResult.status ?? "pending", b.taxId, b.phone],
+      );
+    });
+
+    res.status(201).json({
+      ether_user_id: etherUserId,
+      status: etherResult.status ?? "pending",
+      document_checklist: etherResult.documentChecklist ?? null,
+      message: "Cadastro iniciado. Envie os documentos pendentes para completar a verificação.",
+    });
+  }),
+);
+
+/** GET /auth/onboarding/status — consulta o status da conta na Ether. */
+authRouter.get(
+  "/onboarding/status",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const profile = await withUser(req.userId, async (client) => {
+      const { rows } = await client.query(
+        `select ether_user_id, ether_account_status, ether_pix_key, ether_pix_key_type
+           from public.profiles where id = $1`,
+        [req.userId],
+      );
+      return rows[0];
+    });
+
+    if (!profile?.ether_user_id) {
+      return res.json({ status: "not_started" });
+    }
+
+    // Consulta o status atual na Ether.
+    const { getAccountStatus } = await import("../ether.js");
+    try {
+      const etherStatus = await getAccountStatus(profile.ether_user_id);
+
+      // Atualiza o status local se mudou.
+      if (etherStatus?.status && etherStatus.status !== profile.ether_account_status) {
+        const { withService } = await import("../db.js");
+        await withService(async (client) => {
+          await client.query(
+            `update public.profiles set ether_account_status = $2 where id = $1`,
+            [req.userId, etherStatus.status],
+          );
+        });
+      }
+
+      return res.json({
+        ether_user_id: profile.ether_user_id,
+        status: etherStatus?.status ?? profile.ether_account_status,
+        pix_key: profile.ether_pix_key,
+        pix_key_type: profile.ether_pix_key_type,
+        checklist: etherStatus?.documentChecklist ?? null,
+      });
+    } catch {
+      // Se a Ether estiver fora, retorna o último status conhecido.
+      return res.json({
+        ether_user_id: profile.ether_user_id,
+        status: profile.ether_account_status,
+        pix_key: profile.ether_pix_key,
+        pix_key_type: profile.ether_pix_key_type,
+        checklist: null,
+      });
+    }
   }),
 );

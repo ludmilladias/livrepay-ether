@@ -63,6 +63,13 @@ export const config = {
     clientId: optional("ETHER_CLIENT_ID", ""),
     clientSecret: optional("ETHER_CLIENT_SECRET", ""),
     webhookSecret: optional("ETHER_WEBHOOK_SECRET", ""),
+    // Cognito: a Ether usa AWS Cognito para autenticação de sub-contas.
+    // O LivrePay (participant) precisa dessas credenciais para criar/autenticar
+    // usuários finais na Ether.
+    cognitoAppClientId: optional("ETHER_COGNITO_APP_CLIENT_ID", ""),
+    cognitoUserPoolId: optional("ETHER_COGNITO_USER_POOL_ID", ""),
+    // tenantUrl do LivrePay na Ether (usado no onboarding de sub-contas).
+    tenantUrl: optional("ETHER_TENANT_URL", "livrepay.digital"),
   },
 
   // Sem isso, rate limit vira MemoryStore por instância: com 2+ réplicas atrás
