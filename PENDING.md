@@ -71,6 +71,98 @@ dinheiro por si só) para confirmar. Saque PIX real e pagamento real de boleto *
 ser testados por mim** de forma alguma (ver seção de segurança do agente) — só pelo usuário,
 manualmente, com valor pequeno.
 
+**Atualização 2026-09-04 — causa real confirmada pelo suporte técnico da Ether (WhatsApp,
+Roger Ferreira, time tec):** o diagnóstico acima (status de conta/KYC) estava incompleto. A
+causa raiz real do `AUTH_KEY_001` é que `POST /auth/authenticate` gera um token de **usuário
+final** (Cognito), não de **parceiro** (LivrePay). O token decodificado confirmou: sem claim
+`aud`, `scope` apontando para `api.etherprivatebank.com.br` (domínio de e-mail corporativo,
+não atende API) em vez do domínio de API correto. O fluxo correto para parceiro é M2M com API
+Key de Integrador:
+
+- Endpoint: `POST /auth/api-key` (não documentado na spec OpenAPI local — confirmado apenas
+  por essa conversa com o suporte; a spec só documenta `/auth/authenticate` e descreve o
+  security scheme `ApiKeyAuth` como "Bearer Token JWT originado do fluxo M2M utilizando sua
+  API Key de Integrador", o que é consistente com a explicação do suporte).
+- Corpo: mesmo formato já usado (`{clientId, clientSecret}`).
+- `/auth/authenticate` continua correto para autenticar **sub-conta/cliente final** via
+  Cognito (`authenticateSubAccount()` em `server/src/ether.js`) — não mexer nesse caminho.
+
+**Teste real contra produção (2026-09-04)**: `POST /auth/api-key` com `{clientId, clientSecret}`
+retornou **401 `{"message":"Unauthorized"}`** (não 404 — o endpoint existe). Consistente com o
+próprio aviso do suporte na mesma mensagem: *"Escopo: configuração correta é
+`https://api.etherdex.com/user` (ou `/participant`). O scope atual tá apontando pra outro
+domínio."* — ou seja, o scope do client `rscjgeg0vbsjgbgu6fpq8ntc9` ainda está configurado
+errado **do lado da Ether**, não é algo que o nosso payload possa corrigir. **Bloqueador
+externo, sem ação possível do nosso lado até a Ether corrigir o scope do client.**
+
+**Resposta completa do suporte técnico (Roger Ferreira, Ether) em 2026-09-04 — registrar como
+fonte de verdade sobre pontos não documentados na spec OpenAPI local:**
+
+1. **Auth**: `POST /auth/api-key` com Client ID + Secret é o caminho certo pra parceiro (✅
+   implementado). Scope precisa ser `https://api.etherdex.com/user` (ou `/participant`) — ainda
+   não corrigido do lado deles (ver teste acima).
+2. **Base URL**: `https://api.etherglobalassets.com.br` (já é o que `ETHER_BASE_URL` usa,
+   confirmado correto). `etherprivatebank.com.br` é só domínio de e-mail corporativo, **não
+   atende API** — não usar para nada.
+3. **Cadastro de cliente final**: `POST /users/onboarding` (CPF/CNPJ) + `POST /kyc/submissions`
+   (documentos). Conta some para status `FULL` só após aprovação do KYC; enquanto pendente,
+   endpoints protegidos retornam erro (comportamento esperado, não bug).
+4. **Chave PIX**: `POST /pix/keys` (Email, Aleatória, CPF, CNPJ, Telefone) — exige KYC aprovado
+   no cliente.
+5. **Webhook — HMAC**: assinatura `HMAC-SHA256` no header `X-Signature`, formato
+   `t=<timestamp>,v1=<hex_digest>`. Gerar o secret com `POST /webhooks/secret` (aparece **uma
+   única vez**, precisa salvar). Requisições com mais de 5 minutos de timestamp são rejeitadas.
+   **Correção 2026-09-04: a validação HMAC já está implementada em
+   `server/src/routes/webhook.js` (linhas 137-196)** — a nota anterior aqui ("sem assinatura
+   HMAC, ainda não implementado") estava desatualizada/errada. O que falta confirmar é se o
+   valor atual de `ETHER_WEBHOOK_SECRET` (`.env`/produção) é de fato o secret retornado por
+   `POST /webhooks/secret` da Ether, ou um valor local/placeholder — se for placeholder, o HMAC
+   nunca vai bater e todo webhook real será rejeitado com "assinatura inválida" mesmo o código
+   estando correto. **Verificar a origem desse valor antes de considerar resolvido.**
+6. **⚠️ Contradiz a tabela da seção 1 acima**: *"Cobranças PIX: o módulo nativo ainda não tá no
+   ar. O caminho hoje é gerar QR Code via `POST /pix/deposit` e receber a confirmação por
+   webhook."* — a tabela da seção 1 marca "Cobrança > PIX: Emitir cobrança PIX (copia-e-cola)"
+   como `✅ completo, testado`, usando o endpoint COMEX `/charges` (documentado no OpenAPI). Ou
+   seja: **o suporte está dizendo que o módulo de cobrança nativo (COMEX `/charges`) não está
+   no ar em produção**, mesmo estando na spec — precisa reconfirmar com eles se isso se refere
+   à cobrança PIX genérica ou é específico de algum caso. **Não presumir que `/charges` funciona
+   em produção sem reconfirmar** — pode ter sido testado só contra sandbox/mock antes.
+7. **Estrutura de contas**: confirma o que já foi feito no commit `c1211e8`
+   ("adaptar integração Ether para sub-contas individuais") — conta pool não funciona, cada
+   cliente final precisa de conta própria (CPF/CNPJ + carteira separada), modelo recomendado é
+   **sub-participants** vinculados ao cadastro principal com limites compartilhados, migração
+   gradual permitida.
+
+**Próximo passo**: responder ao Roger confirmando o teste do `/auth/api-key` (401, mesmo scope
+mal configurado) e pedir confirmação/ETA da correção de scope, e esclarecer o ponto 6 (cobrança
+PIX nativa via `/charges` está ou não em produção).
+
+**Atualização 2026-09-04 (2ª resposta do suporte) — SUPERSEDE os pontos 1 e 3 acima:**
+
+1. O suporte agora afirma que **`AUTH_KEY_001` não existe no sistema deles** — apesar de a API
+   retornar esse código literalmente em todo endpoint protegido (evidência real, testada
+   inclusive em `GET /users/onboarding`). Hipótese deles: token rejeitado por `aud` divergente
+   do `endUserLoginClientId` cadastrado no participant. Nosso token client_credentials **não
+   tem claim `aud`** (Cognito não emite `aud` nesse fluxo, só `client_id`) — se o validador
+   exige `aud`, todo token nosso falha por construção. Config do lado da Ether.
+2. `POST /auth/api-key` foi testado com Bearer + 10 formatos: sempre 401 (`AUTH_KEY_001` com
+   Bearer, `Unauthorized` genérico sem). **Revertido**: `getParticipantToken()` voltou a usar
+   `POST /auth/authenticate` (único endpoint documentado na spec e que emite token).
+3. **Não existem** endpoints `accept-terms` nem `pep-declaration` — removidos de
+   `server/src/ether.js`. Fluxo real de onboarding: usuário no Cognito → `POST
+   /users/onboarding` com `identityDocument` (CPF/CNPJ) → `POST /kyc/submissions` → aprovação
+   da Ether muda a conta de BASIC para FULL. Implementado em `submitOnboarding()` /
+   `submitKyc()` e na rota `POST /auth/onboarding` (`server/src/routes/auth.js`).
+4. Suporte pediu o header `Authorization: Bearer` completo para diagnosticar — token de
+   diagnóstico gerado em `ether-token-diagnostico.txt` (fora do git, validade 1h) com claims
+   decodificados: `client_id=rscjgeg0vbsjgbgu6fpq8ntc9`, sem `aud`, scope
+   `https://api.etherprivatebank.com.br/user`, iss Cognito `us-east-2_BcbqtNJM3`.
+5. **Bloqueador continua 100% externo**: nada no nosso request muda o `aud`/scope do token —
+   isso é configuração do App Client / participant no Cognito da Ether. Aguardando diagnóstico
+   deles com o token enviado.
+
+Testes: `server/tests/ether.test.js` 6/6 OK (mock atualizado para `/auth/authenticate`).
+
 **Sem assinatura HMAC no webhook** — a Ether só permite configurar a URL, sem header
 customizado documentado no OpenAPI estudado. O segredo hoje só é aceito via header
 `x-webhook-secret` — o fallback anterior de token na URL (`POST /ether/:token`) foi removido

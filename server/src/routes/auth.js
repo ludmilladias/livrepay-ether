@@ -226,24 +226,21 @@ const onboardingSchema = z.object({
 });
 
 /**
- * POST /auth/onboarding — inicia o processo de abertura de sub-conta na Ether.
+ * POST /auth/onboarding — inicia a abertura de conta na Ether.
  *
- * Fluxo:
- * 1. Usuário preenche dados KYC no frontend
- * 2. Criamos a sub-conta na Ether (POST /users/profile-data)
- * 3. Aceitamos termos + declaração PEP automaticamente
- * 4. Retornamos o status e os documentos pendentes para upload
- *
- * O usuário ainda precisa enviar documentos (RG, comprovante, etc.) via
- * /kyc/submissions — o upload é feito pelo frontend, mas a rota aqui
- * retorna o checklist para orientar o usuário.
+ * Fluxo real (confirmado pelo suporte Ether em 2026-09-04):
+ * 1. Usuário preenche dados no frontend
+ * 2. POST /users/onboarding na Ether com identityDocument (CPF/CNPJ) —
+ *    primeira requisição autenticada; cria a conta em status BASIC
+ * 3. Documentos de KYC vão via /kyc/submissions
+ * 4. Ether aprova → conta vira FULL e libera Pix/saldo
  */
 authRouter.post(
   "/onboarding",
   requireAuth,
   validate(onboardingSchema),
   asyncRoute(async (req, res) => {
-    const { createSubAccount, acceptTerms, declareNonPep } = await import("../ether.js");
+    const { submitOnboarding } = await import("../ether.js");
     const b = req.body;
 
     // Verifica se já fez onboarding.
@@ -259,36 +256,9 @@ authRouter.post(
       throw new ApiError(409, "Onboarding já realizado. Status: " + existing.ether_account_status);
     }
 
-    // Monta o payload para a Ether.
-    const user = await withUser(req.userId, async (client) => {
-      const { rows } = await client.query(
-        `select p.full_name, u.email from public.profiles p
-           join auth.users u on u.id = p.id
-          where p.id = $1`,
-        [req.userId],
-      );
-      return rows[0];
-    });
-
-    const etherPayload = {
-      name: user.full_name,
-      email: user.email,
-      profile: {
-        taxId: b.taxId,
-        personType: b.personType,
-        phone: b.phone,
-        dateBirth: b.dateBirth,
-      },
-      address: b.address,
-      document: {
-        type: b.personType === "FISICA" ? "CARTEIRA_IDENTIDADE" : "CONTRATO_SOCIAL",
-      },
-      ...(b.companyInfo ? { companyInfo: b.companyInfo } : {}),
-    };
-
     let etherResult;
     try {
-      etherResult = await createSubAccount(etherPayload);
+      etherResult = await submitOnboarding(b.taxId);
     } catch (error) {
       console.error("Ether recusou o onboarding", {
         userId: req.userId,
@@ -297,21 +267,9 @@ authRouter.post(
       throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
     }
 
-    const etherUserId = etherResult.userId;
+    const etherUserId = etherResult.userId ?? etherResult.id;
     if (!etherUserId) {
       throw new ApiError(502, "Ether não retornou ID do usuário");
-    }
-
-    // Aceita termos e declaração PEP automaticamente.
-    try {
-      await acceptTerms(etherUserId);
-      await declareNonPep(etherUserId);
-    } catch (error) {
-      console.warn("Termos/PEP falharam após onboarding bem-sucedido", {
-        etherUserId,
-        detail: error?.body ?? String(error),
-      });
-      // Não bloqueia: o usuário pode aceitar depois via painel da Ether.
     }
 
     // Grava o vínculo no banco (service_role pode escrever ether_*).
@@ -321,15 +279,14 @@ authRouter.post(
         `update public.profiles
             set ether_user_id = $2, ether_account_status = $3, tax_id = $4, phone = $5
           where id = $1`,
-        [req.userId, etherUserId, etherResult.status ?? "pending", b.taxId, b.phone],
+        [req.userId, etherUserId, etherResult.status ?? "basic", b.taxId, b.phone],
       );
     });
 
     res.status(201).json({
       ether_user_id: etherUserId,
-      status: etherResult.status ?? "pending",
-      document_checklist: etherResult.documentChecklist ?? null,
-      message: "Cadastro iniciado. Envie os documentos pendentes para completar a verificação.",
+      status: etherResult.status ?? "basic",
+      message: "Cadastro iniciado. Envie os documentos de KYC para liberar a conta (status FULL).",
     });
   }),
 );

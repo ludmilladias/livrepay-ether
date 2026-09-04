@@ -60,6 +60,9 @@ async function getParticipantToken() {
   }
   assertConfigured();
 
+  // Único fluxo documentado na spec (POST /auth/authenticate, clientId+clientSecret).
+  // O suporte confirmou (2026-09-04) que o 401 nos endpoints protegidos é rejeição
+  // do token por aud/App Client mal configurado no participant — pendência da Ether.
   const response = await fetchWithTimeout(`${config.ether.baseUrl}/auth/authenticate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -111,23 +114,24 @@ export async function authenticateSubAccount(email, password) {
 }
 
 /**
- * Cria uma sub-conta (cliente final) na Ether via onboarding.
- * Usa o token do participant para autenticar.
+ * Onboarding de conta na Ether — primeira requisição autenticada de um usuário.
+ * Fluxo real confirmado pelo suporte (2026-09-04):
+ *   1. usuário criado no Cognito → 2. POST /users/onboarding com identityDocument
+ *   → 3. POST /kyc/submissions → 4. Ether aprova → conta BASIC vira FULL.
+ * Não existem endpoints accept-terms nem pep-declaration.
  *
- * @param {object} data — dados do cliente (nome, email, CPF/CNPJ, endereço, etc.)
+ * @param {string} identityDocument — CPF ou CNPJ (somente dígitos)
+ * @param {string} [token] — token da sub-conta; se omitido usa o do participant
  */
-export async function createSubAccount(data) {
-  const token = await getParticipantToken();
-  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/profile-data`, {
+export async function submitOnboarding(identityDocument, token) {
+  const authToken = token ?? await getParticipantToken();
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/onboarding`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      ...data,
-      tenantUrl: config.ether.tenantUrl,
-    }),
+    body: JSON.stringify({ identityDocument }),
   });
 
   const body = await response.json().catch(() => null);
@@ -136,37 +140,23 @@ export async function createSubAccount(data) {
 }
 
 /**
- * Aceita os termos de uso de uma sub-conta.
+ * Submete documentos de KYC (POST /kyc/submissions). Conta sai de BASIC para
+ * FULL somente após aprovação pela Ether; até lá endpoints protegidos falham.
  */
-export async function acceptTerms(userId) {
-  const token = await getParticipantToken();
-  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/${userId}/accept-terms`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new EtherError(response.status, body);
-  }
-}
-
-/**
- * Declaração de não-PEP de uma sub-conta.
- */
-export async function declareNonPep(userId) {
-  const token = await getParticipantToken();
-  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/${userId}/pep-declaration`, {
+export async function submitKyc(submission, token) {
+  const authToken = token ?? await getParticipantToken();
+  const response = await fetchWithTimeout(`${config.ether.baseUrl}/kyc/submissions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ isPep: false }),
+    body: JSON.stringify(submission),
   });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new EtherError(response.status, body);
-  }
+
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new EtherError(response.status, body);
+  return body;
 }
 
 // ---------------------------------------------------------------------------
