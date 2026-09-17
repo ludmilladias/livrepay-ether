@@ -43,9 +43,19 @@ End-to-end API test against the real stack:
 docker compose up -d --build
 bash server/tests/e2e.sh [base_url]   # defaults to http://localhost:8081
 ```
-**This script executes real payment flows** (`POST /payments/:id/execute` for both a PIX
-transfer and a boleto) against whatever `ETHER_*` credentials are in `.env`. Never run it against
-production credentials without knowing that.
+`POST /payments/:id/execute` (PIX transfer and boleto) is the same endpoint the app uses to
+move real money, and since 2026-09-17 `.env` can hold a valid Ether integration credential
+(see PENDING.md/HANDOFF-ETHER.md) — a previous accidental safety net (invalid credentials
+always rejecting) is gone. **By default `e2e.sh` skips the two assertions that call
+`/payments/:id/execute`**, prints a `SKIP` line, and runs everything else; the test users
+never carry balance at that point in the script, so even when run, `execute_payment()`
+(Postgres) rejects for insufficient funds before either PIX or boleto payout is ever sent to
+the Ether client (`withdrawPixToKey()` / `payBoleto(isSimulation:false)`) — only
+`simulateBoleto()` (`isSimulation: true`, read-only) can fire for the boleto case. Opt into
+those two assertions explicitly, only when you know which `ETHER_*` credential is active:
+```bash
+ETHER_ALLOW_REAL_PAYMENTS=1 bash server/tests/e2e.sh
+```
 
 Full stack locally:
 ```bash

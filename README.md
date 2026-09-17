@@ -37,6 +37,16 @@ bash server/tests/e2e.sh           # ponta a ponta contra a stack real — NUNCA
 cd server && npm run test:ether    # retry/timeout do cliente Ether, contra mock
 ```
 
+`server/tests/e2e.sh` roda com uma credencial Ether real no `.env` (desde 2026-09-17). Por
+padrão ele **pula** as duas asserções que chamam `POST /payments/:id/execute` (PIX e boleto,
+o mesmo caminho que move dinheiro de verdade em produção) e avisa isso na saída — o resto da
+suíte roda normal. Só inclua essas asserções sabendo exatamente contra qual `.env`/credencial
+está rodando:
+
+```sh
+ETHER_ALLOW_REAL_PAYMENTS=1 bash server/tests/e2e.sh
+```
+
 ## Comandos
 
 ```sh
