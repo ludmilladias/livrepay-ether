@@ -35,6 +35,10 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
+      # O Postgres deste compose é local e não fala TLS. Em produção (DO
+      # Managed Postgres) o SSL é obrigatório e vem de config.isProduction —
+      # aqui desligamos explicitamente, sem alterar o comportamento remoto.
+      PGSSLMODE: ${PGSSLMODE:-disable}
       PORT: 8080
       PGHOST: db
       PGPORT: 5432
