@@ -113,50 +113,57 @@ export async function authenticateSubAccount(email, password) {
   return body.access_token;
 }
 
+// ---------------------------------------------------------------------------
+// Cadastro de cliente final (Criação de Conta + KYC)
+//
+// Fluxo conforme a documentação oficial (privatedocs.etherglobalassets.com.br
+// → Ether Global Assets) e a spec `Ether Global Assets.json`:
+//   1. POST /users/profile-data          → cria/recupera rascunho, devolve userId
+//   2. POST /users/{id}/accept-terms     → aceite dos termos (IP/UA auditados)
+//   3. POST /users/{id}/pep-declaration  → autodeclaração de não-PEP
+//   4. POST /users/document/upload       → um documento por chamada (máx 5MB)
+//   5. GET  /users/{id}/check-account    → pending_documents → pending_analysis → active
+//
+// HISTÓRICO (não repetir o erro): em 2026-09-04 estes endpoints foram trocados
+// por `POST /users/onboarding` + `POST /kyc/submissions` com base em orientação
+// do suporte por WhatsApp. Ambos retornam **404 NOT_FOUND** em produção e não
+// aparecem na documentação — verificado em 2026-09-09. Só mude este fluxo
+// contra evidência de request real, não contra mensagem de suporte.
+// ---------------------------------------------------------------------------
+
 /**
- * Onboarding de conta na Ether — primeira requisição autenticada de um usuário.
- * Fluxo real confirmado pelo suporte (2026-09-04):
- *   1. usuário criado no Cognito → 2. POST /users/onboarding com identityDocument
- *   → 3. POST /kyc/submissions → 4. Ether aprova → conta BASIC vira FULL.
- * Não existem endpoints accept-terms nem pep-declaration.
- *
- * @param {string} identityDocument — CPF ou CNPJ (somente dígitos)
+ * Passo 1 — cria (ou recupera, por e-mail) o cadastro do cliente final.
+ * @param {object} payload — CreateUserProfilePayload (name, email, tenantUrl,
+ *   profile, address, document e companyInfo quando personType = JURIDICA)
  * @param {string} [token] — token da sub-conta; se omitido usa o do participant
  */
-export async function submitOnboarding(identityDocument, token) {
-  const authToken = token ?? await getParticipantToken();
-  const response = await fetchWithTimeout(`${config.ether.baseUrl}/users/onboarding`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ identityDocument }),
-  });
-
-  const body = await response.json().catch(() => null);
-  if (!response.ok) throw new EtherError(response.status, body);
-  return body;
+export async function createUserProfile(payload, token) {
+  return call("POST", "/users/profile-data", payload, true, token);
 }
 
-/**
- * Submete documentos de KYC (POST /kyc/submissions). Conta sai de BASIC para
- * FULL somente após aprovação pela Ether; até lá endpoints protegidos falham.
- */
-export async function submitKyc(submission, token) {
-  const authToken = token ?? await getParticipantToken();
-  const response = await fetchWithTimeout(`${config.ether.baseUrl}/kyc/submissions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(submission),
-  });
+/** Passo 2 — registra o aceite dos termos de uso do cliente. */
+export async function acceptTerms(userId, token) {
+  return call("POST", `/users/${userId}/accept-terms`, {}, true, token);
+}
 
-  const body = await response.json().catch(() => null);
-  if (!response.ok) throw new EtherError(response.status, body);
-  return body;
+/** Passo 3 — grava a autodeclaração de não-PEP. */
+export async function submitPepDeclaration(userId, declarationVersion = "v1.0", token) {
+  return call("POST", `/users/${userId}/pep-declaration`, { declarationVersion }, true, token);
+}
+
+/** Passo 5 — status do cadastro: pending_documents | pending_analysis | active | inactive. */
+export async function checkAccountStatus(userId, token) {
+  return call("GET", `/users/${userId}/check-account`, undefined, true, token);
+}
+
+/** Checklist de documentos: pendentes, enviados e recusados. */
+export async function getDocumentRequirements(userId, token) {
+  return call("GET", `/users/${userId}/document-requirements`, undefined, true, token);
+}
+
+/** Tipos de documento aceitos para upload no KYC. */
+export async function getDocumentTypes(token) {
+  return call("GET", "/users/document/types", undefined, true, token);
 }
 
 // ---------------------------------------------------------------------------

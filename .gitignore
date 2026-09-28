@@ -16,8 +16,9 @@ dist-ssr
 .env
 .env.*
 !.env.example
-nao-subir.md
-nao-subir-infra.md
+# Notas e credenciais que nunca sobem (glob cobre arquivos futuros também —
+# ex: nao-subir-ether-apikey.txt, gerado pelo bootstrap da API Key da Ether)
+nao-subir*
 
 # Dumps de banco (dados financeiros reais) — nunca versionar
 db/backups/

@@ -8,13 +8,18 @@
 > cobrança sem conferência de valor) + 4 achados médios (ver SECURITY.md, seção "Barreira
 > crítica: quem pode creditar" e tabela "Banco de dados"). Migration
 > `20260820000000_close_settlement_gaps.sql`, testes T2b e T29-T32 novos (32 no total).
+>
+> **2026-09-17**: o bloqueio de credencial da Ether (seção 1, "Testado contra a Ether de
+> produção...") **foi resolvido** — a Ether entregou um par de credenciais de integração
+> válido. Detalhe e evidência na entrada "2026-09-17 — DESBLOQUEADO" dentro da seção 1.
 
 ## Como retomar uma sessão
 
 ```bash
-docker compose up -d --build   # .env já existe e está preenchido, inclusive Ether
+docker compose up -d --build   # .env já existe e está preenchido com credencial Ether válida
 npm run db:test              # 32 asserções no banco
-bash server/tests/e2e.sh     # 48 asserções na API (NUNCA rode contra a Ether de produção sem querer mover dinheiro real)
+bash server/tests/e2e.sh     # 48 asserções na API — por padrão NÃO executa pagamento real
+                               # (ver ETHER_ALLOW_REAL_PAYMENTS na seção 1, "2026-09-17")
 cd server && npm run test:ether && cd ..  # retry/timeout do cliente Ether contra mock
 npm run typecheck && npm run dev
 ```
@@ -43,7 +48,9 @@ autenticação ou a integração com a Ether.
 - Pagamento de boleto com saldo cripto — arquitetura do LIVREPAY é só BRL hoje.
 
 **Testado contra a Ether de produção com credenciais reais (2026-08-11) — bloqueado por
-status da conta, não por bug de integração.**
+status da conta, não por bug de integração.** (Histórico — resolvido em 2026-09-17, ver
+entrada "DESBLOQUEADO" mais abaixo nesta mesma seção. A credencial usada nos testes 1-4
+abaixo era a antiga, de usuário final; foi substituída.)
 
 Usando as credenciais encontradas em `LIVREPAY SISTEMA/livrepaymongo8-main/.../.env`
 (`ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET`, agora copiadas para o `.env` deste projeto):
@@ -163,6 +170,295 @@ PIX nativa via `/charges` está ou não em produção).
 
 Testes: `server/tests/ether.test.js` 6/6 OK (mock atualizado para `/auth/authenticate`).
 
+**Atualização 2026-09-28 — nova credencial testada (a mesma entregue em 2026-09-17,
+`nao-subir-ether-apikey.txt`), achado sobre escopo `/tenant` vs `/user`:**
+
+O usuário reenviou o par `ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` (`vuqm6oibc45c7mb6pkjr2ctra`
+— mesmo da entrega de 2026-09-17) e foi testado de novo contra produção:
+
+1. `POST /auth/authenticate` → 201, scope **`https://api.etherprivatebank.com.br/tenant`**
+   (confirma o já registrado em 2026-09-17: essa credencial é de tenant/participante).
+2. `GET /account-balance` → 200 `{"balance":0}`, `GET /pix/keys` → 200 `[]`,
+   `GET /users/document/types` → 200. Bate exatamente com a matriz de 2026-09-17.
+3. **Dado novo**: `POST /users/profile-data` com esse token de escopo `/tenant` retorna
+   `404 USR_NOT_001` — não `400` de validação como acontecia com a credencial antiga (escopo
+   `/user`, `rscjgeg0vbsjgbgu6fpq8ntc9`, ver entrada de 2026-09-09 acima). **Isso sugere que
+   `profile-data` espera um token de escopo `/user`, não `/tenant`** — hipótese a confirmar,
+   não fato. Reforça a leitura já registrada em 2026-09-09/10: o gateway roteia por escopo do
+   token, e `404` com token válido pode significar "rota invisível para esse escopo", não
+   necessariamente erro de `tenantUrl` (já testamos 3 valores de `tenantUrl` diferentes em
+   2026-09-09 com a credencial antiga e todos deram o mesmo 404 — não repetir esse teste).
+4. `GET /transactions` → 403 "escopo incorreto para carteira" — mais um indício de que o
+   token `/tenant` não serve para operações de conta/usuário individual.
+5. Bloqueio pontual do CloudFront/WAF (403, página HTML) na 1ª tentativa de
+   `POST /users/profile-data` — sumiu na 2ª tentativa com `User-Agent` de navegador. Possível
+   rate-limit; monitorar se recorrer.
+
+**Pergunta objetiva para a Ether (ainda não enviada)**: *"A credencial de tenant
+(`vuqm6oibc45c7mb6pkjr2ctra`) autentica e acessa `/account-balance`, `/pix/keys`,
+`/users/document/types` normalmente, mas `POST /users/profile-data` retorna
+`404 USR_NOT_001` com ela. `/users/profile-data` deveria ser chamado com essa credencial de
+tenant, ou é um endpoint de escopo `/user` (a credencial antiga, `rscjgeg0vbsjgbgu6fpq8ntc9`)?
+Se for `/user`, qual das duas credenciais devemos usar para cada grupo de endpoints?"*
+
+**Não fazer até responderem**: não testar mais variações de `tenantUrl` (já descartado como
+causa em 2026-09-09) nem alternar credenciais às cegas — perguntar primeiro.
+
+**Estado do código**: `server/src/ether.js` já tem `createUserProfile`/`acceptTerms`/
+`submitPepDeclaration`/`checkAccountStatus` restaurados (commit `3574cef`, branch
+`fix/ether-credenciais-integracao`) — **não remover de novo**. Falta apenas: (a) atualizar
+`ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` em produção (App Platform) com o par de 2026-09-17,
+(b) resposta da Ether sobre qual credencial usar em `profile-data`.
+
+**Atualização 2026-09-09 (3ª resposta do suporte + teste de endpoint) — bloqueio isolado:**
+
+O suporte fechou o diagnóstico: as credenciais Cognito que temos são de **usuário humano**
+(app/mobile); acesso programático exige uma **ApiKey de integrador separada**, que segundo eles
+seria gerada via `POST /participant/api-key`. Testamos — **esse endpoint não existe**:
+
+| Método | Endpoint | HTTP | Leitura |
+|---|---|---|---|
+| POST | `/participant/api-key` | **404** | endpoint indicado pelo suporte não existe em produção |
+| POST | `/participants/api-key` | 404 | — |
+| GET | `/participant` / `/participant/api-key` | 404 | — |
+| POST | `/webhooks/secret` | **404** | também indicado pelo suporte; também não existe |
+| POST | `/auth/api-key` | **401 `AUTH_KEY_001`** | **existe** (401 ≠ 404), mas rejeita credencial Cognito |
+
+**Conclusão com evidência**: `/auth/api-key` está no ar e `AUTH_KEY_001` é literalmente "ApiKey
+de integrador ausente/inválida" — consistente em todo endpoint protegido. Como o endpoint de
+emissão self-service (`/participant/api-key`) não existe, **a ApiKey tem de ser emitida pela
+equipe da Ether manualmente**. Não há ação técnica nossa que destrave isso.
+
+**Consulta à documentação oficial (`docs.etherglobalassets.com.br`) — 2026-09-09:**
+
+- **Guias → Primeiros Passos**: *"Entre em contato com o nosso suporte@etherglobalassets.com.br
+  para gerar sua API KEY, que é composta por um **Cliente ID e uma Client Secret**."* Ou seja,
+  **pela doc oficial a API KEY É o par clientId+clientSecret que já temos** — não existe
+  "ApiKey de integrador" separada. A orientação do suporte no WhatsApp contradiz a própria doc.
+- A referência de API publicada (`/ether-global-assets-2`) tem **um único endpoint**:
+  `POST /auth/authenticate`. Nada sobre `api-key`, `participant` ou `AUTH_KEY_001`.
+- **Divergência doc × produção**: a doc mostra a resposta do auth em camelCase
+  (`accessToken`/`expiresIn`/`tokenType`); a API real devolve **snake_case**
+  (`access_token`/`expires_in`/`token_type`) — verificado hoje. Nosso código usa snake_case,
+  que é o correto contra a API real. Não mexer.
+- Doc menciona portal de Internet Banking em `https://banking.etherglobalassets.com.br`
+  (criação de conta em `/account-creation`) e que *"para iniciar a operação, será necessário
+  enviar saldo para sua conta"* — **pista não explorada**: talvez a conta precise de KYC
+  aprovado e/ou saldo para liberar os endpoints protegidos. Vale logar no portal e conferir o
+  status da conta direto, sem depender do tempo de resposta do suporte.
+
+**Conclusão consolidada**: a autenticação funciona, o fluxo implementado é o documentado, e
+todos os caminhos alternativos sugeridos pelo suporte retornam 404. O bloqueio é
+**provisionamento/status da conta do lado da Ether**, não código nosso.
+
+**Correção aplicada 2026-09-09 (reverte a regressão de 04/09):**
+
+Testes contra a API real provaram que o token do participant **é aceito** em
+`POST /users/profile-data` (chega a `400` de validação, não `401`), enquanto
+`/users/onboarding` e `/kyc/submissions` retornam **404**. Ou seja: a orientação do suporte
+levou o código para endpoints inexistentes, e os documentados foram removidos por engano.
+
+- `server/src/ether.js`: `submitOnboarding()`/`submitKyc()` **removidos**; no lugar,
+  `createUserProfile()`, `acceptTerms()`, `submitPepDeclaration()`, `checkAccountStatus()`,
+  `getDocumentRequirements()`, `getDocumentTypes()` — todos sobre endpoints documentados.
+- `server/src/routes/auth.js` (`POST /auth/onboarding`): monta o `CreateUserProfilePayload`
+  completo (usa `config.ether.tenantUrl`), chama `profile-data` e em seguida `accept-terms` +
+  `pep-declaration` (falha nessas duas é logada mas não invalida o cadastro já criado).
+- Comentário no código explicando por que **não** voltar atrás sem evidência de request real.
+
+Erros de validação úteis descobertos no caminho (o endpoint valida de verdade):
+domínio `example.com` é rejeitado ("problematic domain") e `dateBirth` exige maior de 18 anos
+**mesmo para PJ**. Com payload válido, o erro passa a ser `404 USR_NOT_001` — e testamos três
+`tenantUrl` diferentes (incluindo um inexistente de propósito): **os três dão o mesmo erro**,
+então não é o tenant, é o registro do participant. Nenhum cliente foi criado.
+
+**Pergunta objetiva para a Ether** (substitui a anterior): *"nosso participant autentica e é
+aceito em `/users/profile-data`, mas `/account-balance` devolve `AUTH_KEY_001` e a criação de
+cliente devolve `USR_NOT_001`. Qual o `tenantUrl` correto da LivrePay e o participant está
+totalmente provisionado?"*
+
+### 2026-09-10 — causa raiz identificada: o token emitido pela Ether vem sem `aud`
+
+O suporte respondeu que `AUTH_KEY_001` "não existe no sistema deles" e que o token
+provavelmente é rejeitado por `aud` que não bate com o App Client ID do participant.
+Decodificamos o token que **o `/auth/authenticate` deles emite**:
+
+```
+claims: auth_time, client_id, exp, iat, iss, jti, scope, sub, token_use, version
+aud       -> AUSENTE (não existe no payload)
+client_id -> rscjgeg0vbsjgbgu6fpq8ntc9
+scope     -> https://api.etherprivatebank.com.br/user   (o próprio suporte disse que o
+             correto seria api.etherdex.com — domínio errado)
+```
+
+**Não há correção possível do nosso lado**: quem emite o token é o endpoint deles, a partir
+da configuração do App Client no Cognito deles. Não dá para "adicionar" um claim que o
+emissor não coloca. Os dois claims que o suporte apontou como causa provável (`aud` e
+`scope`) estão errados e ambos são gerados pela configuração da Ether.
+
+Prova de que o token **não** é o problema em si: `POST /users/profile-data` **aceita esse
+mesmo token** (chega a `400` de validação de corpo), enquanto `/account-balance`, `/pix/keys`
+e `/users/document/types` devolvem `401 AUTH_KEY_001`. Token inválido falharia em todos.
+
+Reconfirmado em 2026-09-10 (token novo, nada mudou do lado deles):
+`/users/onboarding`, `/kyc/submissions` e `/webhooks/secret` → **404 NOT_FOUND**, apesar de o
+suporte insistir nesse fluxo. Mantemos a implementação sobre os endpoints documentados.
+
+Resposta pronta para enviar ao suporte: `scratchpad/resposta-suporte-ether.md`.
+
+### 2026-09-10 (tarde) — causa raiz CONFIRMADA e caminho de solução
+
+O suporte explicou a peça que faltava e ela é consistente com todas as evidências:
+**as credenciais que temos (`rscjgeg0vbsjgbgu6fpq8ntc9`) são de um App Client do Cognito
+para login de PESSOAS, não para integração sistema-a-sistema.** A credencial de integração
+ainda não foi gerada.
+
+**Correção de uma conclusão anterior deste documento:** chegamos a afirmar que
+`/participant/api-key` "não existe" porque devolve 404 com token válido e 401 sem token.
+Um teste de controle com uma rota inventada (`/rota-inventada-xyz`) devolve **exatamente o
+mesmo par 401/404** — ou seja, aquele 401 é só o middleware global e não prova nada. O 404
+com nosso token é explicado por roteamento por escopo: nosso token tem
+`scope: .../user` e as rotas `/participant/*` exigem escopo de participant.
+
+**Fluxo correto (3 passos), a rodar UMA vez:**
+
+```
+1. POST /participant/api-key    (Bearer = JWT de um ADMIN humano)  -> clientId + secretToken
+2. POST /auth/api-key/secret    (secretToken, janela de 5 min)     -> clientId + clientSecret
+3. POST /auth/api-key           (clientId + clientSecret)          -> access_token
+```
+
+Depois disso, `ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` passam a ser esse novo par, e a
+autenticação em `server/src/ether.js` muda de `/auth/authenticate` para `/auth/api-key`.
+
+**Script pronto**: `server/scripts/bootstrap-ether-apikey.js` executa os 3 passos, grava as
+credenciais em `nao-subir-ether-apikey.txt` (coberto pelo `.gitignore` via glob `nao-subir*`)
+em vez de imprimir no terminal, e valida chamando `/account-balance` no final.
+
+```bash
+node server/scripts/bootstrap-ether-apikey.js <JWT_DO_ADMIN>
+```
+
+**BLOQUEIO ATUAL — depende de ação humana**: falta o **JWT de um usuário admin** do
+participant LivrePay. Não é o token do `.env`. Precisa vir de um login humano no portal da
+Ether (`exchange.etherglobalassets.com.br`). Perguntar ao suporte qual é o caminho oficial
+para obtê-lo, caso o portal não exponha.
+
+Evidência formatada para enviar ao suporte:
+`scratchpad/evidencia-ether-apikey.md` (fora do git).
+
+**Pedido pendente à Ether**: (a) emitir a ApiKey de integrador + o segredo de webhook para a
+LivrePay, ou (b) informar método/path corretos e qual credencial autentica a emissão.
+
+### 2026-09-10 (noite) — login SRP implementado e validado; a pergunta do admin está respondida (mas negativa)
+
+Implementado `server/scripts/lib/cognito-srp.js` (SRP contra App Client com secret,
+`SECRET_HASH` calculado manualmente já que `amazon-cognito-identity-js` não suporta isso
+nativamente) e o desafio MFA `SOFTWARE_TOKEN_MFA` (TOTP) em `server/scripts/
+bootstrap-ether-apikey.js`. **Rodado contra o Cognito de produção da Ether, com TOTP real,
+por quem tem a senha do usuário — funcionou de ponta a ponta.**
+
+Resultado:
+
+```
+Claims do JWT do admin (não sensíveis):
+{
+  "token_use": "access",
+  "scope": "aws.cognito.signin.user.admin",
+  "client_id": "rscjgeg0vbsjgbgu6fpq8ntc9",
+  "exp_iso": "2026-09-10T20:10:17.000Z",
+  "groups": ["CLIENT"],
+  "sub_hash": "presente (não exibido)"
+}
+
+1/3  POST /participant/api-key ...
+✗ Falhou no passo 1 — HTTP 404
+{ "error": "Not Found", "message": "NOT_FOUND", "statusCode": 404 }
+```
+
+**A pergunta em aberto desde a seção anterior ("existe um usuário admin da LivrePay
+cadastrado na Ether?") está respondida**: existe um usuário (`jandir@livrepay.app`), o
+login SRP funciona, **mas ele está no grupo Cognito `CLIENT`** (usuário final), não em um
+grupo de admin/participant, e o token que ele recebe tem `scope:
+aws.cognito.signin.user.admin` (auto-gerenciamento de conta Cognito — trocar senha, MFA —
+não é escopo de API). `POST /participant/api-key` com esse token devolve 404, o mesmo
+padrão já documentado para qualquer token sem escopo de participant. Nenhuma credencial de
+integração foi emitida — o fluxo parou no passo 1.
+
+**Desconhecido, não tratar como resolvido**: não dá para separar, só com essa evidência, se
+o 404 vem (a) do papel do usuário (`CLIENT`, não admin), (b) da forma do escopo do token
+SRP (`aws.cognito.signin.user.admin` não é escopo de API, então talvez nenhum usuário
+logando por SRP nesse App Client tenha acesso a `/participant/*`, admin ou não), ou (c)
+ambos. Só testando com um usuário que seja de fato admin do participant isola a causa.
+
+**Gotcha novo**: `jandir@livrepay.app` tem MFA `SOFTWARE_TOKEN_MFA` (TOTP) configurado —
+quem rodar o bootstrap precisa do app autenticador em mãos, código válido por ~30s, pedido
+no momento via prompt (ou `--totp 123456` se gerado na hora).
+
+**Pergunta pronta para o suporte da Ether** (inclui o pedido de webhook que já estava
+pendente):
+
+> Nosso usuário `jandir@livrepay.app` (grupo Cognito `CLIENT`, User Pool
+> `us-east-2_BcbqtNJM3`) autentica com sucesso via SRP + MFA (TOTP), mas
+> `POST /participant/api-key` com o token dele devolve `404 NOT_FOUND` — o mesmo
+> comportamento que documentamos para tokens sem escopo de participant. Duas coisas que
+> precisamos: (1) promover este usuário a administrador do participant LivrePay, ou criar um
+> usuário admin do participant separado; (2) o segredo do webhook (`whsec_...` ou
+> equivalente) — `POST /webhooks/secret` continua devolvendo 404 para nós, e a validação
+> HMAC-SHA256 já está implementada, só falta o valor real.
+
+Detalhe completo, incluindo a implementação do SRP com secret e o patch de `SECRET_HASH`,
+em [HANDOFF-ETHER.md](HANDOFF-ETHER.md) (seção "O bloqueio atual, exato").
+
+### 2026-09-17 — DESBLOQUEADO: a Ether entregou a credencial de integração
+
+O bloqueio documentado desde 2026-08-11 (seção 1 deste arquivo) **está resolvido**. A Ether
+entregou um par de credenciais de integração novo — não pelo fluxo `/participant/api-key`
+descrito acima (não foi necessário), a Ether simplesmente gerou e passou o par. Validado
+contra a API real:
+
+```
+clientId/clientSecret: ver nao-subir-ether-apikey.txt (fora do git, modo 600)
+
+POST /auth/api-key       -> HTTP 401 {"message":"Unauthorized"}
+POST /auth/authenticate  -> HTTP 201, scope: https://api.etherprivatebank.com.br/tenant
+GET /account-balance      -> HTTP 200
+GET /pix/keys             -> HTTP 200
+GET /users/document/types -> HTTP 200
+```
+
+O escopo saiu de `.../user` para `.../tenant` (participant), e os três endpoints que
+davam `401 AUTH_KEY_001` durante toda a investigação anterior agora respondem `200`.
+
+**Correção explícita a uma conclusão anterior — não reverter sem novo teste:** este documento
+e o HANDOFF diziam que, ao obter a credencial de integração, seria preciso trocar
+`server/src/ether.js` de `/auth/authenticate` para `/auth/api-key`. **Testado e está
+errado**: `POST /auth/api-key` com o par novo devolve `401 Unauthorized`. O par novo
+autentica no mesmo `/auth/authenticate` que o código já usa — **a autenticação em código não
+muda**, só os valores de `ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` no `.env`.
+`server/src/ether.js` não foi alterado por causa disso.
+
+**Continua aberto**: o segredo do webhook (`whsec_...`). `POST /webhooks/secret` segue
+devolvendo 404 e nunca foi entregue por outro canal — a validação HMAC-SHA256 já está
+implementada em `server/src/routes/webhook.js`, falta só o valor real.
+
+**Implicação de segurança tratada nesta mesma sessão**: com credencial válida, `server/tests/
+e2e.sh` perdeu a proteção acidental de "toda chamada à Ether falha com 401" — antes disso,
+`POST /payments/:id/execute` (PIX e boleto) sempre esbarrava em erro do provedor antes de
+mover qualquer dinheiro. O script foi ajustado para exigir `ETHER_ALLOW_REAL_PAYMENTS=1`
+explicitamente antes de rodar essas duas asserções (default: pula com aviso, resto da suíte
+roda normal). As asserções continuam seguras mesmo quando rodadas com a variável ligada — os
+usuários de teste nunca têm saldo interno até a seção de Recebíveis, que roda depois, então
+`execute_payment()` recusa por saldo insuficiente antes de qualquer chamada que de fato pague
+(`withdrawPixToKey()`/`payBoleto(isSimulation:false)`); só `simulateBoleto()`
+(`isSimulation:true`, consulta, não paga) chega a ser chamada de verdade no caminho de
+boleto. Ver comentário no topo de `server/tests/e2e.sh`, `CLAUDE.md` e `README.md`.
+
+**Nota de diagnóstico (não bloqueante)**: o CloudFront da Ether passou a bloquear User-Agent
+padrão do `curl` (403 "Request blocked"). Verificado que o `fetch` nativo do Node (undici) passa
+normalmente (200) — **produção não é afetada**, mas quem depurar com `curl` precisa mandar
+`-H "User-Agent: Mozilla/5.0 ..."` ou vai perseguir um 403 fantasma.
+
 **Sem assinatura HMAC no webhook** — a Ether só permite configurar a URL, sem header
 customizado documentado no OpenAPI estudado. O segredo hoje só é aceito via header
 `x-webhook-secret` — o fallback anterior de token na URL (`POST /ether/:token`) foi removido
@@ -271,9 +567,11 @@ antes de considerar totalmente encerrado.
 
 ## Ordem sugerida para a próxima sessão
 
-1. **Resolver o status da conta na Ether** (`AUTH_KEY_001` — ver seção 1). É bloqueador para
-   qualquer teste real adicional; sem isso, o resto pode ser feito mas não confirmado
-   ponta a ponta contra o provedor de verdade.
+1. ~~Resolver o status da conta na Ether~~ — ✅ **feito (2026-09-17)**: a Ether entregou a
+   credencial de integração (`.env` já atualizado). O que resta neste tópico: (a) confirmar
+   ponta a ponta com um PIX/boleto real de valor pequeno, feito manualmente pela usuária (não
+   por este agente — ver guardrails de produção); (b) conseguir o segredo do webhook
+   (`whsec_...`), ainda pendente.
 2. ~~Recebíveis~~ — ✅ feito (Agenda, Contratos, Adiantamento).
 3. ~~Relatórios~~ — ✅ feito (Extratos, Conciliação, Financeiro) — falta rodar e2e num
    ambiente com docker disponível para confirmar ponta a ponta.

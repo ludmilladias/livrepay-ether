@@ -148,6 +148,88 @@ export async function runProviderEvent(storedId, { eventType, payload, eventId }
  *    evento não se perde e pode ser reprocessado.
  *  - Idempotência por (provider, event_id) UNIQUE: reentrega não credita 2x.
  */
+/**
+ * Valida a assinatura HMAC (X-Signature) ou, na ausência dela, o segredo
+ * legado por header. Retorna null se válido, ou a resposta de erro a enviar.
+ */
+function validateSignature(req) {
+  const signatureHeader = req.get("x-signature");
+  if (signatureHeader) {
+    // HMAC-SHA256: valida assinatura e protege contra replay.
+    const parts = {};
+    for (const pair of signatureHeader.split(",")) {
+      const [key, value] = pair.split("=", 2);
+      if (key && value) parts[key.trim()] = value.trim();
+    }
+
+    const timestamp = parts.t;
+    const signature = parts.v1;
+
+    if (!timestamp || !signature) {
+      return { status: 401, body: { error: "assinatura malformada" } };
+    }
+
+    // Replay protection: rejeita eventos com mais de 5 minutos.
+    const age = Math.abs(Date.now() / 1000 - Number(timestamp));
+    if (age > 300) {
+      return { status: 401, body: { error: "assinatura expirada" } };
+    }
+
+    const rawBody = JSON.stringify(req.body);
+    const expected = crypto
+      .createHmac("sha256", config.ether.webhookSecret)
+      .update(`${timestamp}.${rawBody}`)
+      .digest("hex");
+
+    if (!safeEqual(signature, expected)) {
+      return { status: 401, body: { error: "assinatura inválida" } };
+    }
+    return null;
+  }
+
+  // Fallback: comparação simples de segredo compartilhado (legado).
+  const provided = req.get("x-webhook-secret") ?? "";
+  if (!safeEqual(provided, config.ether.webhookSecret)) {
+    return { status: 401, body: { error: "unauthorized" } };
+  }
+  return null;
+}
+
+/** Processa o corpo do webhook já autenticado — comum às duas rotas. */
+async function handleEtherWebhook(req, res) {
+  const envelope = req.body ?? {};
+  const eventId = envelope.id;
+  const eventType = envelope.eventType ?? envelope.data?.event;
+  if (!eventId || !eventType) {
+    return res.status(400).json({ error: "missing id or eventType" });
+  }
+
+  // Registro do evento numa transação própria: mesmo que o processamento
+  // falhe depois, o recebimento fica gravado.
+  let storedId;
+  try {
+    storedId = await withService(async (client) => {
+      const { rows } = await client.query(
+        `insert into public.provider_events (provider, event_id, event_type, payload)
+         values ('ether', $1, $2, $3) returning id`,
+        [eventId, eventType, envelope],
+      );
+      return rows[0].id;
+    });
+  } catch (error) {
+    if (error.code === "23505") {
+      // Já recebemos: responder 200 para o provedor parar de reenviar.
+      return res.json({ status: "duplicate_ignored" });
+    }
+    console.error("Falha ao registrar evento do provedor", error);
+    return res.status(500).json({ error: "storage failure" });
+  }
+
+  const payload = envelope.data?.data ?? {};
+  const result = await runProviderEvent(storedId, { eventType, payload, eventId });
+  return res.json(result);
+}
+
 webhookRouter.post(
   "/ether",
   asyncRoute(async (req, res) => {
@@ -156,75 +238,37 @@ webhookRouter.post(
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    const signatureHeader = req.get("x-signature");
-    if (signatureHeader) {
-      // HMAC-SHA256: valida assinatura e protege contra replay.
-      const parts = {};
-      for (const pair of signatureHeader.split(",")) {
-        const [key, value] = pair.split("=", 2);
-        if (key && value) parts[key.trim()] = value.trim();
-      }
+    const invalid = validateSignature(req);
+    if (invalid) return res.status(invalid.status).json(invalid.body);
 
-      const timestamp = parts.t;
-      const signature = parts.v1;
-
-      if (!timestamp || !signature) {
-        return res.status(401).json({ error: "assinatura malformada" });
-      }
-
-      // Replay protection: rejeita eventos com mais de 5 minutos.
-      const age = Math.abs(Date.now() / 1000 - Number(timestamp));
-      if (age > 300) {
-        return res.status(401).json({ error: "assinatura expirada" });
-      }
-
-      const rawBody = JSON.stringify(req.body);
-      const expected = crypto
-        .createHmac("sha256", config.ether.webhookSecret)
-        .update(`${timestamp}.${rawBody}`)
-        .digest("hex");
-
-      if (!safeEqual(signature, expected)) {
-        return res.status(401).json({ error: "assinatura inválida" });
-      }
-    } else {
-      // Fallback: comparação simples de segredo compartilhado (legado).
-      const provided = req.get("x-webhook-secret") ?? "";
-      if (!safeEqual(provided, config.ether.webhookSecret)) {
-        return res.status(401).json({ error: "unauthorized" });
-      }
-    }
-
-    const envelope = req.body ?? {};
-    const eventId = envelope.id;
-    const eventType = envelope.eventType ?? envelope.data?.event;
-    if (!eventId || !eventType) {
-      return res.status(400).json({ error: "missing id or eventType" });
-    }
-
-    // Registro do evento numa transação própria: mesmo que o processamento
-    // falhe depois, o recebimento fica gravado.
-    let storedId;
-    try {
-      storedId = await withService(async (client) => {
-        const { rows } = await client.query(
-          `insert into public.provider_events (provider, event_id, event_type, payload)
-           values ('ether', $1, $2, $3) returning id`,
-          [eventId, eventType, envelope],
-        );
-        return rows[0].id;
-      });
-    } catch (error) {
-      if (error.code === "23505") {
-        // Já recebemos: responder 200 para o provedor parar de reenviar.
-        return res.json({ status: "duplicate_ignored" });
-      }
-      console.error("Falha ao registrar evento do provedor", error);
-      return res.status(500).json({ error: "storage failure" });
-    }
-
-    const payload = envelope.data?.data ?? {};
-    const result = await runProviderEvent(storedId, { eventType, payload, eventId });
-    return res.json(result);
+    return handleEtherWebhook(req, res);
   }),
 );
+
+/**
+ * Rota alternativa com token no path — usada quando o painel da Ether só
+ * permite cadastrar uma URL de callback, sem headers customizados. O token
+ * é validado em tempo constante; a assinatura HMAC (se enviada) continua
+ * validada como camada adicional.
+ */
+webhookRouter.post(
+  "/ether/:token",
+  asyncRoute(async (req, res) => {
+    if (!config.ether.webhookUrlToken) {
+      console.error("ETHER_WEBHOOK_URL_TOKEN não configurado — rejeitando tudo");
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    if (!safeEqual(req.params.token, config.ether.webhookUrlToken)) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    // Se a Ether também enviar X-Signature, valida como camada adicional.
+    if (req.get("x-signature") && config.ether.webhookSecret) {
+      const invalid = validateSignature(req);
+      if (invalid) return res.status(invalid.status).json(invalid.body);
+    }
+
+    return handleEtherWebhook(req, res);
+  }),
+);
+

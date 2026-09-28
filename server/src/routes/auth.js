@@ -228,19 +228,21 @@ const onboardingSchema = z.object({
 /**
  * POST /auth/onboarding — inicia a abertura de conta na Ether.
  *
- * Fluxo real (confirmado pelo suporte Ether em 2026-09-04):
- * 1. Usuário preenche dados no frontend
- * 2. POST /users/onboarding na Ether com identityDocument (CPF/CNPJ) —
- *    primeira requisição autenticada; cria a conta em status BASIC
- * 3. Documentos de KYC vão via /kyc/submissions
- * 4. Ether aprova → conta vira FULL e libera Pix/saldo
+ * Fluxo conforme a documentação oficial (verificado em 2026-09-09):
+ * 1. `POST /users/profile-data` na Ether → cria o rascunho e devolve o userId
+ * 2. `POST /users/{id}/accept-terms` e `/pep-declaration`
+ * 3. Documentos via `POST /users/document/upload`
+ * 4. Ether aprova → `check-account` passa a `active` e libera Pix/saldo
+ *
+ * Atenção: `/users/onboarding` e `/kyc/submissions` (sugeridos por suporte em
+ * 2026-09-04) retornam 404 em produção — não voltar a usá-los.
  */
 authRouter.post(
   "/onboarding",
   requireAuth,
   validate(onboardingSchema),
   asyncRoute(async (req, res) => {
-    const { submitOnboarding } = await import("../ether.js");
+    const { createUserProfile, acceptTerms, submitPepDeclaration } = await import("../ether.js");
     const b = req.body;
 
     // Verifica se já fez onboarding.
@@ -256,11 +258,42 @@ authRouter.post(
       throw new ApiError(409, "Onboarding já realizado. Status: " + existing.ether_account_status);
     }
 
+    // Nome e e-mail do titular: o e-mail vive em auth.users, fora do alcance
+    // da role `authenticated` — leitura via service_role, do próprio usuário.
+    const { withService } = await import("../db.js");
+    const titular = await withService(async (client) => {
+      const { rows } = await client.query(
+        `select u.email, coalesce(p.full_name, u.email) as full_name
+           from auth.users u
+           left join public.profiles p on p.id = u.id
+          where u.id = $1`,
+        [req.userId],
+      );
+      return rows[0];
+    });
+    if (!titular) throw new ApiError(404, "Usuário não encontrado");
+
+    const payload = {
+      name: titular.full_name,
+      email: titular.email,
+      tenantUrl: config.ether.tenantUrl,
+      accountType: "NOMINAL",
+      profile: {
+        taxId: b.taxId,
+        personType: b.personType,
+        phone: b.phone,
+        dateBirth: b.dateBirth,
+      },
+      address: b.address,
+      document: { type: b.personType === "JURIDICA" ? "CARTAO_CNPJ" : "CARTEIRA_IDENTIDADE" },
+      ...(b.companyInfo ? { companyInfo: b.companyInfo } : {}),
+    };
+
     let etherResult;
     try {
-      etherResult = await submitOnboarding(b.taxId);
+      etherResult = await createUserProfile(payload);
     } catch (error) {
-      console.error("Ether recusou o onboarding", {
+      console.error("Ether recusou o cadastro do cliente", {
         userId: req.userId,
         detail: error?.body ?? String(error),
       });
@@ -272,8 +305,25 @@ authRouter.post(
       throw new ApiError(502, "Ether não retornou ID do usuário");
     }
 
+    // Aceite de termos e declaração de PEP são exigidos antes da análise. Uma
+    // falha aqui não invalida o cadastro já criado — registramos e seguimos,
+    // para o cliente poder reenviar sem recriar o cadastro do zero.
+    for (const [etapa, fn] of [
+      ["accept-terms", () => acceptTerms(etherUserId)],
+      ["pep-declaration", () => submitPepDeclaration(etherUserId)],
+    ]) {
+      try {
+        await fn();
+      } catch (error) {
+        console.error(`Ether recusou ${etapa}`, {
+          userId: req.userId,
+          etherUserId,
+          detail: error?.body ?? String(error),
+        });
+      }
+    }
+
     // Grava o vínculo no banco (service_role pode escrever ether_*).
-    const { withService } = await import("../db.js");
     await withService(async (client) => {
       await client.query(
         `update public.profiles

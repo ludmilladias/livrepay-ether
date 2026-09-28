@@ -63,6 +63,11 @@ export const config = {
     clientId: optional("ETHER_CLIENT_ID", ""),
     clientSecret: optional("ETHER_CLIENT_SECRET", ""),
     webhookSecret: optional("ETHER_WEBHOOK_SECRET", ""),
+    // Token no path da URL de callback cadastrada no painel da Ether —
+    // necessário porque o painel deles só aceita configurar a URL, sem
+    // headers customizados. Validado em tempo constante, como camada
+    // adicional à assinatura HMAC (quando presente).
+    webhookUrlToken: optional("ETHER_WEBHOOK_URL_TOKEN", ""),
     // Cognito: a Ether usa AWS Cognito para autenticação de sub-contas.
     // O LivrePay (participant) precisa dessas credenciais para criar/autenticar
     // usuários finais na Ether.
