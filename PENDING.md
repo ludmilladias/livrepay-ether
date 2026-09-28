@@ -170,6 +170,46 @@ PIX nativa via `/charges` está ou não em produção).
 
 Testes: `server/tests/ether.test.js` 6/6 OK (mock atualizado para `/auth/authenticate`).
 
+**Atualização 2026-09-28 — nova credencial testada (a mesma entregue em 2026-09-17,
+`nao-subir-ether-apikey.txt`), achado sobre escopo `/tenant` vs `/user`:**
+
+O usuário reenviou o par `ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` (`vuqm6oibc45c7mb6pkjr2ctra`
+— mesmo da entrega de 2026-09-17) e foi testado de novo contra produção:
+
+1. `POST /auth/authenticate` → 201, scope **`https://api.etherprivatebank.com.br/tenant`**
+   (confirma o já registrado em 2026-09-17: essa credencial é de tenant/participante).
+2. `GET /account-balance` → 200 `{"balance":0}`, `GET /pix/keys` → 200 `[]`,
+   `GET /users/document/types` → 200. Bate exatamente com a matriz de 2026-09-17.
+3. **Dado novo**: `POST /users/profile-data` com esse token de escopo `/tenant` retorna
+   `404 USR_NOT_001` — não `400` de validação como acontecia com a credencial antiga (escopo
+   `/user`, `rscjgeg0vbsjgbgu6fpq8ntc9`, ver entrada de 2026-09-09 acima). **Isso sugere que
+   `profile-data` espera um token de escopo `/user`, não `/tenant`** — hipótese a confirmar,
+   não fato. Reforça a leitura já registrada em 2026-09-09/10: o gateway roteia por escopo do
+   token, e `404` com token válido pode significar "rota invisível para esse escopo", não
+   necessariamente erro de `tenantUrl` (já testamos 3 valores de `tenantUrl` diferentes em
+   2026-09-09 com a credencial antiga e todos deram o mesmo 404 — não repetir esse teste).
+4. `GET /transactions` → 403 "escopo incorreto para carteira" — mais um indício de que o
+   token `/tenant` não serve para operações de conta/usuário individual.
+5. Bloqueio pontual do CloudFront/WAF (403, página HTML) na 1ª tentativa de
+   `POST /users/profile-data` — sumiu na 2ª tentativa com `User-Agent` de navegador. Possível
+   rate-limit; monitorar se recorrer.
+
+**Pergunta objetiva para a Ether (ainda não enviada)**: *"A credencial de tenant
+(`vuqm6oibc45c7mb6pkjr2ctra`) autentica e acessa `/account-balance`, `/pix/keys`,
+`/users/document/types` normalmente, mas `POST /users/profile-data` retorna
+`404 USR_NOT_001` com ela. `/users/profile-data` deveria ser chamado com essa credencial de
+tenant, ou é um endpoint de escopo `/user` (a credencial antiga, `rscjgeg0vbsjgbgu6fpq8ntc9`)?
+Se for `/user`, qual das duas credenciais devemos usar para cada grupo de endpoints?"*
+
+**Não fazer até responderem**: não testar mais variações de `tenantUrl` (já descartado como
+causa em 2026-09-09) nem alternar credenciais às cegas — perguntar primeiro.
+
+**Estado do código**: `server/src/ether.js` já tem `createUserProfile`/`acceptTerms`/
+`submitPepDeclaration`/`checkAccountStatus` restaurados (commit `3574cef`, branch
+`fix/ether-credenciais-integracao`) — **não remover de novo**. Falta apenas: (a) atualizar
+`ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` em produção (App Platform) com o par de 2026-09-17,
+(b) resposta da Ether sobre qual credencial usar em `profile-data`.
+
 **Atualização 2026-09-09 (3ª resposta do suporte + teste de endpoint) — bloqueio isolado:**
 
 O suporte fechou o diagnóstico: as credenciais Cognito que temos são de **usuário humano**
