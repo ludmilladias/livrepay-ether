@@ -210,6 +210,40 @@ causa em 2026-09-09) nem alternar credenciais às cegas — perguntar primeiro.
 `ETHER_CLIENT_ID`/`ETHER_CLIENT_SECRET` em produção (App Platform) com o par de 2026-09-17,
 (b) resposta da Ether sobre qual credencial usar em `profile-data`.
 
+**Atualização 2026-09-29 — suporte respondeu (WhatsApp): `tenantUrl` era o problema real,
+não a credencial.** A pergunta acima ficou obsoleta — cruzando os dois testes (credencial
+antiga `/user` E nova `/tenant`, ambas com `404 USR_NOT_001` idêntico e independente do
+`tenantUrl` testado) a causa real não era nenhuma das hipóteses cogitadas: era o **valor**
+do `tenantUrl`, só que nenhuma das 3 variações testadas em 2026-09-09 incluía a forma certa.
+
+> "para criar conta precisam mandar o tenantUrl: `api.livrepay.digital`" — suporte, 2026-09-29
+> "usa a credencial de tenant mesmo" — suporte, 2026-09-29
+
+`.env`: `ETHER_TENANT_URL` corrigido de `livrepay.digital` para `api.livrepay.digital`.
+Testado contra produção com a credencial de tenant (`vuqm6oi...`) e o valor corrigido:
+
+```
+POST /users/profile-data -> 400 {"error":"Bad Request","message":"USR_VAL_006","statusCode":400}
+```
+
+**Progresso real**: saiu de `404 USR_NOT_001` (tenant não encontrado) para `400 USR_VAL_006`
+(erro de validação de corpo) — confirma que o tenant agora É encontrado, chegamos na
+validação dos dados. `USR_VAL_006` não está documentado na spec nem foi decodificado antes
+(só vimos `USR_VAL_001` e `USR_VAL_008` em testes anteriores, sem saber o que cada um
+significa). Tentativa isolada de adicionar `nationality`/`monthlyIncome` ao payload não
+mudou o erro — **não continuar adivinhando campo por campo** (força bruta já descartada
+como estratégia). Melhor caminho: perguntar à Ether o que `USR_VAL_006` significa, com o
+payload de teste exato (dado fake, seguro de compartilhar).
+
+**Próxima pergunta pronta para a Ether**:
+
+> `POST /users/profile-data` agora encontra o tenant (`api.livrepay.digital`) e chega na
+> validação de corpo, mas retorna `400 USR_VAL_006`. O que esse código significa? Payload
+> de teste enviado: `{name, email, tenantUrl: "api.livrepay.digital", accountType: "NOMINAL",
+> profile: {taxId, personType: "FISICA", phone, dateBirth: "1990-01-01"}, address: {...},
+> document: {type: "CARTEIRA_IDENTIDADE"}}` — nenhum campo omitido em relação ao schema
+> `CreateUserProfilePayload` da spec.
+
 **Atualização 2026-09-09 (3ª resposta do suporte + teste de endpoint) — bloqueio isolado:**
 
 O suporte fechou o diagnóstico: as credenciais Cognito que temos são de **usuário humano**
