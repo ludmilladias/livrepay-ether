@@ -203,6 +203,10 @@ const onboardingSchema = z.object({
   personType: z.enum(["FISICA", "JURIDICA"]),
   phone: z.string().regex(/^\d{10,11}$/, "Telefone com DDD (apenas números)"),
   dateBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data de nascimento (YYYY-MM-DD)"),
+  // Sem este campo a Ether recusa o cadastro com 400 USR_VAL_006 (achado em
+  // 2026-09-29, teste real contra produção) — não está marcado como obrigatório
+  // na spec OpenAPI, mas na prática é exigido.
+  documentNumber: z.string().min(1).max(30, "Número do documento (RG/CNH/etc.)"),
   address: z.object({
     zipcode: z.string().regex(/^\d{8}$/, "CEP (apenas números)"),
     street: z.string().min(1).max(200),
@@ -285,7 +289,10 @@ authRouter.post(
         dateBirth: b.dateBirth,
       },
       address: b.address,
-      document: { type: b.personType === "JURIDICA" ? "CARTAO_CNPJ" : "CARTEIRA_IDENTIDADE" },
+      document: {
+        type: b.personType === "JURIDICA" ? "CARTAO_CNPJ" : "CARTEIRA_IDENTIDADE",
+        number: b.documentNumber,
+      },
       ...(b.companyInfo ? { companyInfo: b.companyInfo } : {}),
     };
 

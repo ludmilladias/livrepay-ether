@@ -244,6 +244,42 @@ payload de teste exato (dado fake, seguro de compartilhar).
 > document: {type: "CARTEIRA_IDENTIDADE"}}` — nenhum campo omitido em relação ao schema
 > `CreateUserProfilePayload` da spec.
 
+**Atualização 2026-09-29 (continuação, mesma tarde) — sequência de códigos decifrada por
+teste isolado, um campo por vez (estudo da spec + evidência, sem adivinhação às cegas):**
+
+Reexaminando `ApplicationDocumentMetadata` na spec: o campo `document.number` existe no
+schema mas não está na lista `required` do objeto pai — mesmo assim, era o que faltava.
+Sequência de testes, mudando **uma única variável por vez**:
+
+| # | Mudança | Resultado |
+|---|---|---|
+| 1 | payload original (sem `document.number`) | `400 USR_VAL_006` |
+| 2 | + `document.number` preenchido | `400 USR_DUP_005` — **código mudou**, confirma que o campo 1 resolveu `USR_VAL_006` |
+| 3 | + e-mail novo (mesmo `taxId`/`phone`/`document.number`) | `400 USR_DUP_005` — ainda duplicado |
+| 4 | + `phone` novo | `400 USR_DUP_005` — ainda duplicado |
+| 5 | + `document.number` novo (timestamp) | `400 USR_DUP_005` — ainda duplicado |
+| 6 | + `taxId` novo (CPF válido gerado, nunca usado antes) | **`400 USR_MGT_007`** — código mudou de novo |
+
+**Leitura**: `USR_VAL_006` = campo obrigatório faltante, resolvido por `document.number`.
+`USR_DUP_005` = duplicidade por `taxId` (CPF) — os testes 1-5 de hoje reusaram o mesmo CPF
+(`52998224725` depois `11144477735`), then criando um rascunho retido no lado da Ether
+mesmo com todo o resto diferente; só mudar o CPF resolveu. `USR_MGT_007` (módulo
+"management", não catalogado) é a camada seguinte, ainda não decifrada.
+
+**Parei aqui de propósito** — 6 chamadas de teste em sequência contra produção já é o
+suficiente para hoje; continuar adivinhando campo por campo vira o mesmo padrão de força
+bruta já descartado antes. Cada rascunho de teste criado no ambiente real da Ether com CPF
+de teste (gerado por algoritmo válido, não é CPF de pessoa real) — não há dado real de
+cliente exposto, mas os rascunhos ficam no ambiente deles e não foram limpos.
+
+**Pergunta pronta para a Ether (substitui a anterior)**:
+
+> Conseguimos avançar `POST /users/profile-data` até `400 USR_MGT_007`, depois de resolver
+> `USR_VAL_006` (faltava `document.number`) e `USR_DUP_005` (CPF de teste duplicado entre
+> tentativas). O que `USR_MGT_007` significa? Também: os rascunhos de teste que criamos com
+> CPFs fictícios (formato válido, mas não correspondem a pessoas reais) podem ser
+> descartados do lado de vocês, ou ficam pendentes de alguma forma no ambiente de produção?
+
 **Atualização 2026-09-09 (3ª resposta do suporte + teste de endpoint) — bloqueio isolado:**
 
 O suporte fechou o diagnóstico: as credenciais Cognito que temos são de **usuário humano**
