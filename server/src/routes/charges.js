@@ -124,6 +124,22 @@ chargesRouter.patch(
 chargesRouter.post(
   "/:id/emit",
   asyncRoute(async (req, res) => {
+    // Desligado deliberadamente (2026-10-02): a Ether exige conta individual
+    // por cliente (CPF/CNPJ próprio), não conta pool. `createPixDeposit()`
+    // hoje só tem o token do participante (LivrePay) disponível — não há
+    // mecanismo confirmado para obter um token em nome da sub-conta do
+    // usuário (criada via onboarding). Religar só depois de confirmar com a
+    // Ether como autenticar como sub-conta e passar `subAccountToken` aqui.
+    throw new ApiError(
+      503,
+      "Emissão de cobrança PIX temporariamente indisponível — aguardando integração de conta individual com o provedor.",
+    );
+  }),
+);
+
+chargesRouter.post(
+  "/:id/emit-disabled",
+  asyncRoute(async (req, res) => {
     const charge = await withUser(req.userId, async (client) => {
       const { rows } = await client.query(
         `select id, kind, status, amount_cents, provider_charge_id

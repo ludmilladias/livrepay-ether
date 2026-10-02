@@ -164,6 +164,18 @@ paymentsRouter.get(
  * por trás — mesma lógica, mesmo caminho de estorno, seja quem chamar.
  */
 export async function executePaymentForUser(userId, paymentId) {
+  // Desligado deliberadamente (2026-10-02): mesma razão do emit de cobrança
+  // em charges.js — `withdrawPixToKey()`/`payBoleto()` só têm o token do
+  // participante (conta pool da LivrePay), e a Ether exige conta individual
+  // por cliente. Religar só depois de confirmar com a Ether como autenticar
+  // como sub-conta e passar `subAccountToken` nas chamadas abaixo.
+  throw new ApiError(
+    503,
+    "Execução de pagamento temporariamente indisponível — aguardando integração de conta individual com o provedor.",
+  );
+}
+
+export async function executePaymentForUserDisabled(userId, paymentId) {
   const payment = await withUser(userId, async (client) => {
     const { rows } = await client.query(
       `select id, status, amount_cents, recipient_name, recipient_key, metadata

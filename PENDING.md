@@ -284,6 +284,44 @@ cliente exposto, mas os rascunhos ficam no ambiente deles e não foram limpos.
 O bloqueio em `USR_MGT_007` acabou. Hipótese confirmada: o erro vinha dos campos de perfil
 ausentes (a entrada logo abaixo, "NÃO CONFIRMADO", ficou superada por esta).
 
+**2026-10-02 (mesmo dia, à noite) — ACHADO CRÍTICO: emissão de PIX/pagamento usava conta
+pool, não conta individual — DESLIGADO deliberadamente até corrigir.**
+
+Revisão apontou dois problemas reais no fluxo de dinheiro, independentes do onboarding acima:
+
+1. `POST /auth/register` cria conta e libera o dashboard só com e-mail/senha — nenhuma
+   verificação de KYC. `ProtectedRoute` (frontend) só checa sessão, não `ether_account_status`.
+2. **Mais grave**: `POST /charges/:id/emit` (`createPixDeposit`) e `executePaymentForUser`
+   (`withdrawPixToKey`/`payBoleto`) nunca passavam `subAccountToken` — caíam sempre no
+   fallback do token do **participante** (conta única da LivrePay na Ether). Ou seja:
+   **qualquer usuário cadastrado conseguia emitir PIX/pagamento usando a conta pool da
+   LivrePay**, não uma conta individual com KYC aprovado vinculada ao CPF dele. Isso
+   contradiz diretamente o que o suporte da Ether disse (seção 1, item 7): *"conta pool não
+   funciona, cada cliente final precisa de conta própria"*.
+
+**Causa raiz**: não existe, no código ou testado contra a Ether, um mecanismo confirmado
+para obter um token de acesso em nome da sub-conta criada via `profile-data`.
+`authenticateSubAccount(email, password)` existe mas exige a senha do **Cognito** da
+sub-conta — que é diferente da senha que o usuário cadastra no LivrePay (dois sistemas de
+auth distintos) — e nenhum dos 3 guias oficiais explica como essa senha é definida.
+
+**Ação tomada (não é fix completo, é contenção)**: `POST /charges/:id/emit` e
+`executePaymentForUser` (chamado por `POST /payments/:id/execute`) agora **retornam
+sempre `503`** com mensagem clara, em vez de mover dinheiro pela conta pool. O código
+antigo foi preservado como `emit-disabled`/`executePaymentForUserDisabled` (não
+referenciado por nenhuma rota) para religar assim que o mecanismo de sub-conta funcionar.
+Decisão tomada com confirmação explícita da usuária (ação que desliga funcionalidade em
+produção).
+
+**Pergunta a fazer à Ether antes de religar**: depois de `POST /users/profile-data` criar
+a sub-conta, como obter um token de acesso operacional em nome dela (para PIX/boleto)? A
+senha do Cognito é definida em algum passo do onboarding que não vimos nos 3 guias, ou
+existe outro mecanismo (ex: API key por sub-conta, login por link mágico)?
+
+**Pendente, não feito nesta sessão**: gate de KYC no cadastro/dashboard (problema 1) — hoje
+qualquer e-mail/senha libera o dashboard sem checar `ether_account_status`. Não bloqueia
+dinheiro (isso já está coberto pelo 503 acima), mas é inconsistência de produto a revisar.
+
 Evidência (um teste deliberado, payload montado pelo código real: `onboardingSchema.safeParse` +
 `buildOnboardingPayload`; CPF de teste gerado, não é de pessoa real):
 ```
