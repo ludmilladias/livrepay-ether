@@ -4,6 +4,42 @@
 > integração. Leia junto com [PENDING.md](PENDING.md) (estado geral) e [SECURITY.md](SECURITY.md)
 > (modelo de segurança — obrigatório antes de mexer em dinheiro/auth).
 
+## ATUALIZAÇÃO 2026-10-02 — RESOLVIDO: criação de conta de cliente (`POST /users/profile-data`)
+
+O bloqueio em `400 USR_MGT_007` **acabou**: era o payload incompleto (faltavam campos de
+`profile`, `address` e `document`, conforme a documentação oficial PF/PJ obtida nesta data).
+Teste real, PF, payload montado por `onboardingSchema` + `buildOnboardingPayload` (CPF de teste
+gerado):
+
+```
+HTTP 201
+userId:   63fcc67a-9d2c-46ea-b64c-7e1417dcfdee
+tenantId: b5c908dc-69ac-4105-a579-2a49609e0ff8
+status: pending_documents, recovery: false, document: null
+documentChecklist.pending: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA, SELFIE_COM_DOC
+address gravado (a Ether acrescenta complement: null, ibgeCode: null)
+recoveryToken: JWT escopo "registration_recovery", sub = userId, ~48h
+```
+
+Respondido pelo teste: `city` aceita slug (`br-sp-sao-paulo`); `taxId` aceito sem máscara;
+`maritalStatus` aceito como `SOLTEIRO(A)`. Segue aberta só a grafia de `education` (opcional, não
+enviada). Sem teste real ainda: PJ, accept-terms, pep-declaration, upload, check-account.
+
+**Armadilha achada e corrigida — não remova:** o WAF da Ether bloqueia o `User-Agent` padrão do
+fetch do Node (responde HTML). `server/src/ether.js` agora manda `CLIENT_USER_AGENT`
+(`Mozilla/5.0 (compatible; LivrePay-API/1.0; ...)`, o prefixo `Mozilla/5.0` é o que passa) em toda
+requisição; sem isso **toda** chamada à Ether falha em produção. Respostas não-JSON agora viram
+`EtherError` com o status preservado (`body.error = "RespostaNaoJSON"`). Ambos têm teste de
+regressão (`npm run test:ether`, fetch mockado).
+
+**Pista, não conclusão (token em nome da sub-conta):** o `recoveryToken` tem escopo
+`registration_recovery` e ~48h — provavelmente retoma cadastro, não consulta saldo. Nada
+implementado. Detalhes e o achado `ibgeCode` em [PENDING.md](PENDING.md).
+
+O texto abaixo sobre o bloqueio de criação de conta é **histórico**.
+
+---
+
 ## ATUALIZAÇÃO 2026-09-17 — DESBLOQUEADO: credencial de integração recebida e validada
 
 O bloqueio que dominava este documento (e o TL;DR abaixo, mantido como histórico) **está
