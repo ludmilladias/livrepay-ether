@@ -24,6 +24,14 @@ let cachedParticipantToken = null; // { token, expiresAt }
 
 const TIMEOUT_MS = 15_000;
 
+// O WAF da Ether bloqueia User-Agent de cliente HTTP padrão: devolve uma
+// página HTML de bloqueio, não JSON. O UA default do fetch do Node cai nesse
+// filtro, o que derruba TODA chamada à Ether em produção (achado em teste real
+// 2026-10-02). Prefixo "Mozilla/5.0" é o que passa — mantemos a identificação
+// do nosso cliente no resto da string.
+const CLIENT_USER_AGENT =
+  "Mozilla/5.0 (compatible; LivrePay-API/1.0; +https://livrepay.digital)";
+
 function assertConfigured() {
   if (!config.ether.clientId || !config.ether.clientSecret) {
     throw new Error("Integração Ether não configurada (ETHER_CLIENT_ID/SECRET)");
@@ -65,7 +73,7 @@ async function getParticipantToken() {
   // do token por aud/App Client mal configurado no participant — pendência da Ether.
   const response = await fetchWithTimeout(`${config.ether.baseUrl}/auth/authenticate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "User-Agent": CLIENT_USER_AGENT },
     body: JSON.stringify({
       clientId: config.ether.clientId,
       clientSecret: config.ether.clientSecret,
@@ -98,7 +106,7 @@ async function getParticipantToken() {
 export async function authenticateSubAccount(email, password) {
   const response = await fetchWithTimeout(`${config.ether.baseUrl}/auth/authenticate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "User-Agent": CLIENT_USER_AGENT },
     body: JSON.stringify({
       clientId: config.ether.cognitoAppClientId,
       username: email,
@@ -141,9 +149,21 @@ export async function createUserProfile(payload, token) {
   return call("POST", "/users/profile-data", payload, true, token);
 }
 
-/** Passo 2 — registra o aceite dos termos de uso do cliente. */
-export async function acceptTerms(userId, token) {
-  return call("POST", `/users/${userId}/accept-terms`, {}, true, token);
+/**
+ * Passo 2 — registra o aceite dos termos de uso do cliente.
+ *
+ * Guia oficial: sem corpo; o backend da Ether registra IP e User-Agent da
+ * requisição como evidência do aceite. Por isso (a) não enviamos corpo nem
+ * Content-Type e (b) mandamos um User-Agent explícito. Se `userAgent` (do
+ * navegador do cliente) for informado, ele é repassado — melhor evidência de
+ * consentimento do que o UA do nosso servidor; o IP registrado continua sendo
+ * o do servidor (limitação: não há header documentado para repassar o IP do
+ * cliente). Pergunta em aberto para a Ether: aceitam IP/UA do cliente?
+ */
+export async function acceptTerms(userId, { userAgent } = {}, token) {
+  return call("POST", `/users/${userId}/accept-terms`, undefined, true, token, {
+    "User-Agent": sanitizeUserAgent(userAgent),
+  });
 }
 
 /** Passo 3 — grava a autodeclaração de não-PEP. */
@@ -154,6 +174,31 @@ export async function submitPepDeclaration(userId, declarationVersion = "v1.0", 
 /** Passo 5 — status do cadastro: pending_documents | pending_analysis | active | inactive. */
 export async function checkAccountStatus(userId, token) {
   return call("GET", `/users/${userId}/check-account`, undefined, true, token);
+}
+
+/**
+ * Passo 4 — envia UM documento do KYC (multipart/form-data: userId, type, file).
+ * Guia oficial: PDF, JPEG ou PNG, máximo 5MB. Valida tamanho e MIME aqui para
+ * falhar antes de gastar uma chamada; a validação definitiva é da Ether.
+ * @param {string} userId — userId da Ether
+ * @param {string} type — ex.: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA, SELFIE_COM_DOC
+ * @param {Buffer|Uint8Array} fileBuffer
+ */
+export async function uploadDocument(userId, type, fileBuffer, { filename, mimeType }, token) {
+  if (!UPLOAD_DOCUMENT_TYPES.has(type)) {
+    throw new Error("Tipo de documento de upload inválido");
+  }
+  if (!UPLOAD_MIME_TYPES.has(mimeType)) {
+    throw new Error("Tipo de arquivo não aceito (use PDF, JPEG ou PNG)");
+  }
+  if (fileBuffer.byteLength > UPLOAD_MAX_BYTES) {
+    throw new Error("Arquivo acima de 5MB");
+  }
+  const form = new FormData();
+  form.append("userId", userId);
+  form.append("type", type);
+  form.append("file", new Blob([fileBuffer], { type: mimeType }), filename ?? "documento");
+  return call("POST", "/users/document/upload", form, true, token);
 }
 
 /** Checklist de documentos: pendentes, enviados e recusados. */
@@ -170,25 +215,69 @@ export async function getDocumentTypes(token) {
 // Chamadas protegidas (com token do participant OU da sub-conta)
 // ---------------------------------------------------------------------------
 
-async function call(method, path, body, retry = true, token = null) {
+const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+const UPLOAD_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
+/**
+ * Tipos de documento do UPLOAD / `documentChecklist` (passo 4). NÃO é o mesmo
+ * vocabulário de `document.type` do profile-data (passo 1): lá só valem
+ * CARTEIRA_IDENTIDADE|CARTEIRA_TRABALHO|CARTEIRA_HABILITACAO|PASSAPORTE e
+ * "CARTAO_CNPJ" é recusado; aqui "CARTAO_CNPJ" é válido. Não unificar os enums.
+ *   PF: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA, SELFIE_COM_DOC
+ *   PJ: CARTAO_CNPJ, CONTRATO_SOCIAL, COMPROVANTE_RESIDENCIA
+ * (guias oficiais PF e PJ, 2026-10-02; a Ether pode aceitar mais — a validação
+ * definitiva é dela; a nossa evita gastar chamada com typo.)
+ */
+export const UPLOAD_DOCUMENT_TYPES = new Set([
+  "CARTEIRA_IDENTIDADE", "COMPROVANTE_RESIDENCIA", "SELFIE_COM_DOC",
+  "CARTAO_CNPJ", "CONTRATO_SOCIAL",
+]);
+
+/**
+ * UA vem do cliente (não confiável): só ASCII imprimível, tamanho limitado.
+ * Se vazio ou sem o prefixo "Mozilla/5.0", cai em CLIENT_USER_AGENT: qualquer
+ * outro prefixo cai no filtro do WAF da Ether (ver CLIENT_USER_AGENT) e o
+ * accept-terms seria bloqueado.
+ */
+function sanitizeUserAgent(value) {
+  const clean = String(value ?? "").replace(/[^ -~]/g, "").trim().slice(0, 300);
+  return clean.startsWith("Mozilla/5.0") ? clean : CLIENT_USER_AGENT;
+}
+
+async function call(method, path, body, retry = true, token = null, extraHeaders = {}) {
   const authToken = token ?? await getParticipantToken();
+  // FormData: o fetch define o Content-Type com o boundary — não setar à mão.
+  const isForm = typeof FormData !== "undefined" && body instanceof FormData;
   const response = await fetchWithTimeout(`${config.ether.baseUrl}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${authToken}`,
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      "User-Agent": CLIENT_USER_AGENT,
+      ...(body !== undefined && !isForm ? { "Content-Type": "application/json" } : {}),
+      ...extraHeaders,
     },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
   });
 
   // Token revogado antes da hora: limpa o cache e tenta uma única vez.
   if (response.status === 401 && retry && !token) {
     cachedParticipantToken = null;
-    return call(method, path, body, false);
+    return call(method, path, body, false, null, extraHeaders);
   }
 
   const text = await response.text();
-  const parsed = text ? JSON.parse(text) : undefined;
+  // Resposta pode não ser JSON (página de bloqueio do WAF, erro de gateway).
+  // Deixar o JSON.parse estourar perde o status HTTP e transforma um
+  // diagnóstico claro num SyntaxError sem contexto.
+  let parsed;
+  try {
+    parsed = text ? JSON.parse(text) : undefined;
+  } catch {
+    throw new EtherError(response.status, {
+      error: "RespostaNaoJSON",
+      contentType: response.headers.get("content-type"),
+      preview: text.slice(0, 200),
+    });
+  }
   if (!response.ok) throw new EtherError(response.status, parsed);
   return parsed;
 }

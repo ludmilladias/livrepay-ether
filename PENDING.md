@@ -280,6 +280,122 @@ cliente exposto, mas os rascunhos ficam no ambiente deles e não foram limpos.
 > CPFs fictícios (formato válido, mas não correspondem a pessoas reais) podem ser
 > descartados do lado de vocês, ou ficam pendentes de alguma forma no ambiente de produção?
 
+**2026-10-02 — RESOLVIDO: criação de conta de cliente na Ether funciona (teste real, PF).**
+O bloqueio em `USR_MGT_007` acabou. Hipótese confirmada: o erro vinha dos campos de perfil
+ausentes (a entrada logo abaixo, "NÃO CONFIRMADO", ficou superada por esta).
+
+Evidência (um teste deliberado, payload montado pelo código real: `onboardingSchema.safeParse` +
+`buildOnboardingPayload`; CPF de teste gerado, não é de pessoa real):
+```
+POST /users/profile-data -> HTTP 201
+userId:   63fcc67a-9d2c-46ea-b64c-7e1417dcfdee
+tenantId: b5c908dc-69ac-4105-a579-2a49609e0ff8
+status: pending_documents   recovery: false   document: null
+documentChecklist.pending: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA, SELFIE_COM_DOC
+address: gravado, com campos extras do lado deles: complement: null, ibgeCode: null
+recoveryToken: JWT escopo "registration_recovery", sub = userId, exp ~48h (valor não registrado aqui)
+```
+Esse cadastro de teste fica retido no ambiente da Ether (somar aos anteriores; pedir limpeza junto).
+
+Perguntas ao suporte que o teste respondeu de graça (RESOLVIDAS, não perguntar mais):
+- `address.city` aceita slug (`br-sp-sao-paulo`) — **o slug funciona**. Texto livre continua não
+  testado; o frontend deve enviar o slug.
+- `taxId` é aceito **sem máscara** (agora confirmado para PF, com o payload completo).
+- `maritalStatus` é aceito como `SOLTEIRO(A)`.
+
+Continua aberto só: grafia de `education` (`ENSINO SUPERIOR COMPLETO` x `ENSINO_SUPERIOR_COMPLETO`) —
+é opcional e **não foi enviada** no teste. Também sem teste real: PJ (CNPJ sem máscara, `website`/
+`socialNetwork`, `cnaeId`/`assessment`/`legalNature`), accept-terms, pep-declaration e upload.
+
+**Dois bugs nossos achados no caminho (corrigidos em `server/src/ether.js`, com regressão em
+`server/tests/ether.test.js`):**
+1. **`User-Agent` ausente (grave):** nem `getParticipantToken()` nem `call()` mandavam UA. O WAF da
+   Ether bloqueia o UA padrão do fetch do Node e responde HTML — isso derrubaria **toda** chamada
+   à Ether em produção; passou despercebido porque os testes reais eram scripts avulsos com UA de
+   navegador. Agora `CLIENT_USER_AGENT` (`Mozilla/5.0 (compatible; LivrePay-API/1.0; ...)`; o prefixo
+   `Mozilla/5.0` é o que passa) vai em `/auth/authenticate`, `authenticateSubAccount` e `call()`.
+   Revisão: o fallback do accept-terms usava `LivrePay-API/1.0` (sem o prefixo, seria bloqueado) e
+   `authenticateSubAccount` ainda não mandava UA — corrigidos; UA vindo do cliente sem prefixo
+   `Mozilla/5.0` (curl, app nativo) cai no padrão.
+2. **`JSON.parse` sem proteção em `call()`:** resposta não-JSON estourava `SyntaxError` e perdia o
+   status HTTP. Agora vira `EtherError(status, {error:"RespostaNaoJSON", contentType, preview<=200})`.
+   Limitação: no `/auth/authenticate` o corpo não-JSON vira `body: null` (status é preservado).
+
+**Pista (não conclusão) — token em nome da sub-conta:** a Ether devolve um `recoveryToken` JWT por
+cliente (escopo `registration_recovery`, `sub` = userId, ~48h). Provavelmente serve para **retomar o
+cadastro**, não para consultar saldo/Pix da sub-conta. Pode ser pista para a pergunta em aberto
+"como obter token em nome da sub-conta"; nada foi implementado nem testado sobre isso. Hoje
+`onboarding` descarta esse token.
+
+**Achado: `ibgeCode`** apareceu no `address` da resposta (null) e não consta em nenhum dos guias.
+Pode ser relevante para `city` mais tarde (código IBGE do município). Não enviamos esse campo.
+
+**Atualização 2026-10-02 — documentação oficial do fluxo obtida; payload estava incompleto (hipótese abaixo CONFIRMADA no teste real acima):**
+
+A usuária colou o guia oficial "Abertura de Conta PF" (privatedocs da Ether, exige login). Comparado
+com o que `POST /auth/onboarding` enviava, o payload estava **incompleto em 3 objetos**:
+`profile` (faltavam `socialName`, `monthlyIncome`, `hometown`, `nationality`, `maritalStatus`,
+`gender`, `education`), `address` (faltavam `isPreferred`, `addressType`, `country`,
+`caixaPostal`, `anoResidencia`) e `document` (faltavam `issuingAgency`, `issueDate`, `issueState`).
+
+**Hipótese, NÃO CONFIRMADA — ninguém testou ainda**: o `400 USR_MGT_007` vinha dos campos de
+perfil ausentes. Código ajustado em `server/src/routes/auth.js` e `server/src/ether.js`, validado só
+por sintaxe e mock; **nenhuma chamada à Ether foi feita** (cada teste real deixa cadastro retido lá).
+A validação será um único teste deliberado da usuária.
+
+Incertezas que o teste real pode revelar:
+- `address.city`: o guia usa slug (`br-rs-porto-alegre`); repassamos o valor recebido sem transformar.
+- `taxId`: doc mostra com máscara, enviamos sem (já aceito em testes anteriores). Divergência mantida.
+- Passos 2-5 do guia conferidos contra `ether.js`: caminhos e corpos já batiam (accept-terms,
+  pep-declaration v1.0, check-account). Corrigido: accept-terms agora sem corpo/Content-Type e com
+  `User-Agent` explícito (a Ether audita IP+UA; o IP será o do nosso servidor). Criado
+  `uploadDocument()` (multipart, PDF/JPEG/PNG, 5MB) — não havia; **ainda sem rota** que o exponha.
+- Achado lateral: o CHECK de `profiles.ether_account_status` só aceita `pending|basic|full|rejected`,
+  mas a Ether devolve `pending_documents|pending_analysis|active|inactive`; gravar o valor cru
+  quebraria o onboarding depois de a conta já existir na Ether. Mapeamento adicionado no código
+  (`inactive` -> `rejected`: confirmado pela doc 2, "cadastro rejeitado pelo Compliance").
+- `POST /auth/onboarding` agora devolve `document_checklist` (de `documentChecklist` da Ether).
+
+**2026-10-02, 2º documento oficial — "Tipos de contas e dados usados na criação de contas"** (matriz
+PF x PJ + dicionário de enums). Resolvido no código (`server/src/routes/auth.js`):
+- Obrigatoriedade corrigida. PF obrigatório: `nationality`, `maritalStatus`, `monthlyIncome`,
+  `hometown` (+ personType/taxId/phone/dateBirth). PF opcional: `gender`, `education`, `socialName`,
+  `website`, `socialNetwork`, `managerName`. PJ obrigatório: `companyInfo`, `website`, `socialNetwork`
+  (vazio dá `USR_VAL_005`). `companyInfo` é descartado do payload PF; `maritalStatus`/`gender`/
+  `education` são descartados do payload PJ.
+- Enums fechados: `gender`, `maritalStatus` (+ equivalentes em inglês), `education`, `addressType`,
+  `nationality` (Brasileiro|Brasileira), `country` (BR|Brasil), `document.type`.
+- `phone` exatamente 11 dígitos; `anoResidencia` opcional (default 5); `caixaPostal` opcional (default 0).
+- `accountType` fixo `NOMINAL` (deliberado; `CRIPTO` fora do produto).
+- Bug removido: `document.type = CARTAO_CNPJ` não existe na lista aceita de `document.type`.
+
+**Continua em aberto (perguntar à Ether / descobrir no teste real):**
+- **Grafia dos enums**: guia 1 usa `ENSINO_SUPERIOR_COMPLETO` (underscores), dicionário usa
+  `ENSINO SUPERIOR COMPLETO` (espaços/acento; idem `UNIÃO ESTÁVEL`). Aceitamos as duas na entrada e
+  enviamos a do dicionário. Se a Ether rejeitar, inverter a lista `canonical` no schema.
+- **`address.city`**: slug (`br-rs-porto-alegre`) nos guias x texto livre no nosso código. Repassamos
+  o valor recebido sem transformar; o teste real mostra se a Ether exige o slug.
+- **Máscara do `taxId`**: os dois guias mostram máscara (CPF `123.456.789-00`, CNPJ
+  `50.299.488/0001-78`); enviamos só dígitos. CPF sem máscara já foi aceito em teste real; CNPJ nunca foi
+  testado.
+- `personType PESSOA_ESTRANGEIRA`: não suportado.
+
+**2026-10-02, 3º documento oficial — guia "Abertura de conta PJ"** (resolvido no código):
+- RESOLVIDO — `document.type` em PJ: o exemplo oficial de PJ envia `CARTEIRA_IDENTIDADE`; o objeto
+  `document` é o documento pessoal do **representante legal**, não da empresa. Default
+  `CARTEIRA_IDENTIDADE` vale para PF e PJ (a exigência de `documentType` em PJ foi revertida).
+- **Dois vocabulários distintos — não unificar**: `document.type` (passo 1) aceita só
+  CARTEIRA_IDENTIDADE|CARTEIRA_TRABALHO|CARTEIRA_HABILITACAO|PASSAPORTE e recusa `CARTAO_CNPJ`; o
+  checklist/upload (passo 4) usa PF: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA, SELFIE_COM_DOC; PJ:
+  CARTAO_CNPJ, CONTRATO_SOCIAL, COMPROVANTE_RESIDENCIA. `uploadDocument()` agora valida o `type`
+  contra esses 5 valores (`UPLOAD_DOCUMENT_TYPES`), além de MIME e 5MB. Comentários nos dois lugares.
+- RESOLVIDO — `cnaeId`, `assessment`, `legalNature` vão em `profile` (não em `companyInfo`), opcionais,
+  só PJ; descartados em PF.
+- RESOLVIDO (reforçado) — `issuingAgency/issueDate/issueState` aparecem nos dois guias (PF e PJ): a
+  evidência passou de 1 para 2 exemplos oficiais. Mantidos obrigatórios para PF; em PJ são enviados se
+  vierem, mas ainda não exigidos. A matriz de obrigatoriedade continua não os listando.
+- Nomenclatura PJ: `profile.socialName` = razão social; `companyInfo.tradeName` = nome fantasia.
+
 **Atualização 2026-09-09 (3ª resposta do suporte + teste de endpoint) — bloqueio isolado:**
 
 O suporte fechou o diagnóstico: as credenciais Cognito que temos são de **usuário humano**
