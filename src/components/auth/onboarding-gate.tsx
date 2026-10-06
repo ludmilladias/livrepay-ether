@@ -22,7 +22,8 @@ const INCOMPLETE: KycStage[] = ["not_started", "awaiting_documents"];
  */
 export function OnboardingGate({ children }: { children: ReactNode }) {
   const { data: profile, isLoading: profileLoading } = useProfile();
-  const { stage, isLoading: statusLoading } = useKycJourney();
+  // Único ponto de polling no painel (banner e menu só leem o cache); ver useOnboardingStatus.
+  const { stage, isLoading: statusLoading } = useKycJourney({ autoRefresh: true });
 
   if (profileLoading || statusLoading) {
     return (
@@ -76,7 +77,7 @@ export function OnboardingBanner() {
     rejected: {
       icon: <AlertTriangle className="h-4 w-4" />,
       title: "Cadastro recusado",
-      text: "O banco parceiro não aprovou este cadastro. Fale com o suporte para os próximos passos.",
+      text: "O banco parceiro não aprovou este cadastro. Veja o que sabemos e como seguir.",
       cta: "Ver detalhes",
       destructive: true,
     },
