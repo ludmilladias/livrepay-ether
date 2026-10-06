@@ -1006,6 +1006,70 @@ begin
   raise notice 'T36 OK: compliance lista usuarios';
 end $$;
 
+-- --- T37: service_role grava profiles.ether_* (onboarding Ether) ------------
+-- O trigger prevent_ether_field_tampering decide "serviço" pela identidade real
+-- do Postgres (current_user), a mesma que withService() assume via SET LOCAL
+-- ROLE. Antes (20260901000000) lia uma GUC que ninguem seta: o UPDATE do
+-- onboarding sempre estourava.
+reset role;
+set role service_role;
+do $$
+declare _n int;
+begin
+  update public.profiles
+     set ether_user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+         ether_account_status = 'basic'
+   where id = '11111111-1111-1111-1111-111111111111';
+  get diagnostics _n = row_count;
+  if _n <> 1 then
+    raise exception 'T37 FALHOU: service_role atualizou % linhas (esperava 1)', _n;
+  end if;
+  raise notice 'T37 OK: service_role grava campos ether_*';
+exception when raise_exception then
+  raise exception 'T37 FALHOU: service_role barrado pelo trigger: %', sqlerrm;
+end $$;
+
+-- --- T38: authenticated NAO altera ether_* (nem forjando GUC de role) -------
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+do $$
+declare _status text; _uid uuid;
+begin
+  -- 1) tentativa direta
+  begin
+    update public.profiles
+       set ether_user_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+     where id = '11111111-1111-1111-1111-111111111111';
+    raise exception 'T38 FALHOU: authenticated alterou ether_user_id!';
+  exception when raise_exception then
+    if sqlerrm not like 'Campos ether_%' then
+      raise exception 'T38 FALHOU: erro inesperado: %', sqlerrm;
+    end if;
+  end;
+
+  -- 2) forjar a GUC de role nao pode virar bypass
+  perform set_config('request.jwt.claim.role', 'service_role', true);
+  begin
+    update public.profiles
+       set ether_account_status = 'full'
+     where id = '11111111-1111-1111-1111-111111111111';
+    raise exception 'T38 FALHOU: GUC forjada virou bypass do trigger!';
+  exception when raise_exception then
+    if sqlerrm not like 'Campos ether_%' then
+      raise exception 'T38 FALHOU: erro inesperado (GUC forjada): %', sqlerrm;
+    end if;
+  end;
+
+  -- 3) nada mudou alem do que o service_role gravou em T37
+  select ether_user_id, ether_account_status into _uid, _status
+    from public.profiles where id = '11111111-1111-1111-1111-111111111111';
+  if _uid <> 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' or _status <> 'basic' then
+    raise exception 'T38 FALHOU: estado inesperado (%, %)', _uid, _status;
+  end if;
+  raise notice 'T38 OK: authenticated nao altera ether_* (GUC forjada ignorada)';
+end $$;
+
 -- --- Resumo ---------------------------------------------------------------
 reset role;
 do $$
