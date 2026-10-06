@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { withUser, withService } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
-import { createPixDeposit, idempotencyKeyFrom, EtherError } from "../ether.js";
+import { createPixDeposit, idempotencyKeyFrom } from "../ether.js";
+import { etherErrorFields } from "../safeLog.js";
 
 export const chargesRouter = Router();
 chargesRouter.use(requireAuth);
@@ -183,7 +184,7 @@ export const emitChargeViaPoolDisabled = asyncRoute(async (req, res) => {
   } catch (error) {
     console.error("Ether recusou a emissão", {
       chargeId: charge.id,
-      detail: error instanceof EtherError ? error.body : String(error),
+      ...etherErrorFields(error),
     });
     throw new ApiError(502, "Provedor recusou a emissão da cobrança");
   }

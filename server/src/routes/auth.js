@@ -7,6 +7,8 @@ import { authQuery, withUser } from "../db.js";
 import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { createDocumentUploadRouter } from "./onboarding-documents.js";
+import { toCitySlug } from "../cityslug.js";
+import { etherErrorFields } from "../safeLog.js";
 import {
   signAccessToken,
   issueRefreshToken,
@@ -268,9 +270,15 @@ const canonicalEnum = (canonical, aliases = {}) => {
  * além dele. Para CNPJ não há teste real ainda. Não alterar sem novo erro
  * apontando taxId.
  *
- * ATENÇÃO address.city: o guia mostra um slug ("br-rs-porto-alegre"), não o
- * nome. Repassamos o valor recebido sem transformar (regra do slug não
- * confirmada).
+ * address.city: o guia mostra um slug ("br-rs-porto-alegre") e o teste real só
+ * aceitou o slug. Texto livre ("São Paulo") NUNCA foi aceito em teste real, e uma
+ * recusa pode queimar o CPF na Ether (caso USR_DUP_005). Por isso
+ * buildOnboardingPayload normaliza para slug no backend (server/src/cityslug.js);
+ * o schema só rejeita cidade que não gera slug confiável.
+ *
+ * NÃO RESOLVIDO: `hometown` (naturalidade) também é texto livre e segue sem
+ * transformação — a doc só diz "Cidade natal do usuário", sem exemplo, e não há
+ * teste real do formato. Ver PENDING.md.
  *
  * DOIS VOCABULÁRIOS DE DOCUMENTO — NÃO UNIFICAR (não é duplicação):
  *  1) `document.type` (passo 1, profile-data): documento PESSOAL de identidade.
@@ -346,7 +354,7 @@ export const onboardingSchema = z
       number: z.string().min(1).max(20),
       complement: z.string().max(100).optional(),
       district: z.string().min(1).max(100),
-      city: z.string().min(1).max(100), // ver aviso sobre slug acima
+      city: z.string().min(1).max(100), // normalizado p/ slug em buildOnboardingPayload
       state: z.string().length(2),
       country: canonicalEnum(["BR", "Brasil"]).default("BR"), // obrigatório na Ether; default BR
       caixaPostal: z.number().int().min(0).default(0),
@@ -375,6 +383,11 @@ export const onboardingSchema = z
       need(["documentIssuingAgency", "documentIssueDate", "documentIssueState"], "pessoa física");
     } else {
       need(["companyInfo", "website", "socialNetwork"], "pessoa jurídica");
+    }
+    // Cidade que não vira slug confiável (sem letras/dígitos, ou slug de outra UF)
+    // é recusada AQUI, antes de qualquer chamada à Ether.
+    if (toCitySlug(b.address.city, b.address.state) === null) {
+      ctx.addIssue({ code: "custom", path: ["address", "city"], message: "Cidade inválida para a UF informada" });
     }
   });
 
@@ -430,7 +443,8 @@ export function buildOnboardingPayload(b, titular) {
         ...(!isPF ? { cnaeId: b.cnaeId, assessment: b.assessment, legalNature: b.legalNature } : {}),
       }),
     },
-    address: b.address,
+    // city -> slug (ver cityslug.js). O schema já garantiu que não é null.
+    address: { ...b.address, city: toCitySlug(b.address.city, b.address.state) },
     document: {
       // PF e PJ: CARTEIRA_IDENTIDADE por padrão. Em PJ este objeto é o documento
       // pessoal do REPRESENTANTE LEGAL (guia PJ). "CARTAO_CNPJ" NÃO vale aqui —
@@ -502,9 +516,10 @@ authRouter.post(
     try {
       etherResult = await createUserProfile(payload);
     } catch (error) {
+      // Nunca error.body: a Ether ecoa o valor rejeitado (CPF, nascimento, renda).
       console.error("Ether recusou o cadastro do cliente", {
         userId: req.userId,
-        detail: error?.body ?? String(error),
+        ...etherErrorFields(error),
       });
       throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
     }
@@ -527,7 +542,7 @@ authRouter.post(
         console.error(`Ether recusou ${etapa}`, {
           userId: req.userId,
           etherUserId,
-          detail: error?.body ?? String(error),
+          ...etherErrorFields(error),
         });
       }
     }

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ApiError, asyncRoute, requireAuth } from "../middleware.js";
 import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { UPLOAD_DOCUMENT_TYPES } from "../ether.js";
+import { etherErrorFields } from "../safeLog.js";
 
 /**
  * POST /auth/onboarding/documents/:type — envia UM documento de KYC à Ether.
@@ -45,12 +46,6 @@ export function sniffMime(buf) {
 }
 
 const typeParam = z.enum([...UPLOAD_DOCUMENT_TYPES]);
-
-/** Código do erro da Ether só se tiver cara de código (nunca mensagem/corpo livre). */
-function safeEtherCode(error) {
-  const code = error?.body?.code ?? error?.body?.error;
-  return typeof code === "string" && /^[A-Z0-9_]{3,40}$/.test(code) ? code : undefined;
-}
 
 /** Converte falhas do body-parser (tamanho etc.) em ApiError, sem 500. */
 function rawBody(req, res, next) {
@@ -126,8 +121,7 @@ export function createDocumentUploadRouter({ loadProfile, syncLocalStatus, ether
           userId: req.userId,
           type: docType,
           bytes: buf.length,
-          status: error?.status,
-          code: safeEtherCode(error),
+          ...etherErrorFields(error),
         });
         const rejected = error?.status === 400 || error?.status === 409 || error?.status === 422;
         throw new ApiError(

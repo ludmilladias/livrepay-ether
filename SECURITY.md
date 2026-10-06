@@ -151,12 +151,35 @@ sem isso, um segredo de webhook vazado credita qualquer valor para uma cobrança
 - **Persistir antes de processar**: o payload é gravado primeiro; falha no processamento
   grava `error` para reprocessamento, sem perder o evento.
 
+- **HMAC sobre o corpo cru** (desde 2026-10-06): quando há `X-Signature: t=<ts>,v1=<hex>`, o
+  HMAC-SHA256 é calculado sobre `"<ts>." + bytes recebidos` (`req.rawBody`, capturado por
+  `express.json({ verify })` só em `/webhooks`), nunca sobre `JSON.stringify(req.body)` — assinatura
+  de emissor é sobre os bytes enviados. Sem o buffer cru, falha fechada. Timestamp: no máximo
+  300 s no passado e 60 s no futuro (antes `Math.abs` aceitava 5 min adiante). Formato da
+  assinatura **assumido**, ainda não confirmado pela Ether. Teste: `test:webhook`.
+
 > ⚠️ **Limitação**: a Ether só permite configurar a URL do webhook — não há assinatura HMAC
-> documentada. Aceitamos o segredo só via header `x-webhook-secret` (desde 2026-08-20 — o
-> fallback por `?secret=` foi removido porque segredo em query string pode aparecer em log de
-> proxy/CDN). Se a Ether não suportar header customizado na configuração dela, é preciso
-> consultar o suporte antes de reabrir esse fallback. **Peça HMAC à Ether** e migre quando
-> disponível.
+> documentada nem entregue até aqui. O segredo é aceito via header `x-webhook-secret` ou, quando
+> o painel não permite header, pela rota `POST /webhooks/ether/:token` (`ETHER_WEBHOOK_URL_TOKEN`,
+> comparado em tempo constante; é a URL hoje cadastrada na Ether). O fallback por `?secret=` na
+> query foi removido em 2026-08-20; **o token no path tem o mesmo risco** — path de proxy/CDN
+> pode ir parar em log, então não logue URL completa de `/webhooks` e rode rotação do token se
+> houver suspeita. **Peça HMAC à Ether** e migre quando disponível.
+
+### Logs sem dado pessoal
+
+Corpo de erro da Ether e `detail` do Postgres costumam **ecoar o valor rejeitado** (CPF,
+nascimento, renda; em violação de constraint, a linha inteira de `profiles` com `tax_id` e
+`phone`). Regra: erro de integração/banco só vai para log por `server/src/safeLog.js`
+(`etherErrorFields` → status + código com forma de código; `errorLogFields` → `code`,
+`constraint`, `table`, `routine`), **nunca** `error.body`, `error.detail`, `error.message` de
+terceiros nem o objeto de erro cru. Teste: `test:privacy`.
+
+### Cadastro na Ether — `address.city`
+
+Texto livre nunca foi aceito em teste real e recusa pode queimar o CPF do lado da Ether
+(`USR_DUP_005`: só trocar o CPF resolveu). O backend normaliza para slug
+(`server/src/cityslug.js`); `hometown` ainda não (formato desconhecido — ver PENDING.md).
 
 ## Pagamentos — saída de dinheiro
 
@@ -192,9 +215,13 @@ a própria chamada de estorno falhar; aí o log grava `FALHA CRÍTICA`.
 ## Testes
 
 ```bash
-npm run db:test              # 32 asserções de segurança no banco
-bash server/tests/e2e.sh     # 48 asserções ponta a ponta na API
-cd server && npm run test:ether  # retry/timeout do cliente Ether contra mock (nunca a Ether real)
+npm run db:test              # 38 blocos numerados (T1-T38; 43 mensagens OK) de segurança no banco
+bash server/tests/e2e.sh     # 54 asserções ponta a ponta na API (4 puladas por padrão; ver PENDING.md)
+cd server && npm run test:ether      # retry/timeout do cliente Ether contra mock (nunca a Ether real)
+cd server && npm run test:onboarding # schema/payload do cadastro, normalização de address.city
+cd server && npm run test:documents  # rota de upload de documento de KYC (banco e Ether falsos)
+cd server && npm run test:privacy    # PII não vai para log nem resposta (onboarding + handler genérico)
+cd server && npm run test:webhook    # HMAC do webhook sobre o corpo cru, janela de timestamp, idempotência
 ```
 
 `db:test` sobe um Postgres 16 descartável, aplica todas as migrations e valida: onboarding,

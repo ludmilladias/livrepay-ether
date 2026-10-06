@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { withUser, withService } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
+import { etherErrorFields } from "../safeLog.js";
 import {
   withdrawPixToKey,
   inferPixKeyType,
@@ -144,8 +145,7 @@ paymentsRouter.get(
       const status = await getBoletoStatus(payment.provider_payment_id);
       res.json(status);
     } catch (error) {
-      const detail = error instanceof EtherError ? error.body : String(error);
-      console.error("Falha ao consultar status do boleto", { paymentId: req.params.id, detail });
+      console.error("Falha ao consultar status do boleto", { paymentId: req.params.id, ...etherErrorFields(error) });
       throw new ApiError(502, "Não foi possível consultar o status no provedor");
     }
   }),
@@ -214,7 +214,7 @@ export async function executePaymentForUserDisabled(userId, paymentId) {
     } catch (error) {
       console.error("Falha ao simular boleto antes do pagamento", {
         paymentId,
-        detail: error instanceof EtherError ? error.body : String(error),
+        ...etherErrorFields(error),
       });
       throw new ApiError(502, "Não foi possível confirmar o valor do boleto no provedor");
     }
@@ -317,7 +317,7 @@ export async function executePaymentForUserDisabled(userId, paymentId) {
     console.error("Provedor recusou o pagamento — estornando", {
       paymentId,
       method,
-      detail: error instanceof EtherError ? error.body : String(error),
+      ...etherErrorFields(error),
     });
 
     try {
