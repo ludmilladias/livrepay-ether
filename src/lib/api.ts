@@ -128,13 +128,20 @@ async function request<T>(
   retry = true,
 ): Promise<T> {
   const token = readToken(ACCESS_KEY);
+  // Blob/File vai como corpo binário bruto, com o Content-Type do próprio
+  // arquivo (upload de documento de KYC — ver `api.upload`). O resto é JSON.
+  const isBinary = typeof Blob !== "undefined" && body instanceof Blob;
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
     headers: {
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(isBinary
+        ? { "Content-Type": (body as Blob).type }
+        : body !== undefined
+          ? { "Content-Type": "application/json" }
+          : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: isBinary ? (body as Blob) : body !== undefined ? JSON.stringify(body) : undefined,
   });
 
   // Access token expirado: renova uma vez e repete a requisição.
@@ -210,6 +217,8 @@ export const auth = {
       tax_id: string | null;
       phone: string | null;
       roles: string[];
+      /** Vocabulário LOCAL (pending|basic|full|rejected), não o cru da Ether. */
+      ether_account_status?: string | null;
     }>("GET", "/auth/me"),
 };
 
@@ -220,4 +229,10 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {}),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body ?? {}),
   delete: <T>(path: string) => request<T>("DELETE", path),
+  /**
+   * Envia um arquivo como corpo binário bruto (NÃO FormData), com o
+   * Content-Type do arquivo. Reaproveita `request`, então herda Authorization
+   * e a renovação automática de token em 401.
+   */
+  upload: <T>(path: string, file: File) => request<T>("POST", path, file),
 };

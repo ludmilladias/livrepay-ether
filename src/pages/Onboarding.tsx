@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +13,8 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useOnboardingStatus, useSubmitOnboarding, type PersonType } from "@/hooks/use-onboarding";
+import { KycDocuments } from "@/components/onboarding/kyc-documents";
+import { useAuth } from "@/hooks/use-auth";
 import { ApiError } from "@/lib/api";
 
 /** Só dígitos — a Ether aceita CPF/CNPJ/telefone/CEP sem máscara. */
@@ -67,16 +68,14 @@ const initialPJ = {
  * em `onboardingSchema` (server/src/routes/auth.js) — sem tradução no meio.
  */
 export default function Onboarding() {
-  const navigate = useNavigate();
-  const { data: status, isLoading: statusLoading } = useOnboardingStatus();
+  const { signOut } = useAuth();
+  const { data: status, isLoading: statusLoading, isError: statusError, refetch } = useOnboardingStatus();
   const submit = useSubmitOnboarding();
 
   const [personType, setPersonType] = useState<PersonType>("FISICA");
   const [pf, setPf] = useState(initialPF);
   const [pj, setPj] = useState(initialPJ);
   const [error, setError] = useState<string | null>(null);
-
-  const alreadyStarted = status && status.status !== "not_started";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -114,8 +113,9 @@ export default function Onboarding() {
     }
 
     try {
-      const result = await submit.mutateAsync(payload as never);
-      navigate("/", { replace: true, state: { onboarding: result } });
+      // O hook grava o checklist do 201 no cache; ao terminar, esta mesma rota
+      // passa a mostrar a tela de documentos (KycDocuments), sem navegar.
+      await submit.mutateAsync(payload as never);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Não foi possível enviar o cadastro. Tente novamente.",
@@ -123,25 +123,34 @@ export default function Onboarding() {
     }
   }
 
-  if (statusLoading) return null;
+  if (statusLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background" role="status" aria-label="Carregando">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
 
-  if (alreadyStarted) {
+  // Sem status confiável não mostramos o formulário: poderia ser alguém que já se cadastrou.
+  if (statusError || !status) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-6">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle>Cadastro em análise</CardTitle>
-            <CardDescription>
-              Seu cadastro já foi enviado à Ether. Status atual: <strong>{status?.status}</strong>
-            </CardDescription>
+            <CardTitle>Não foi possível carregar seu cadastro</CardTitle>
+            <CardDescription>Verifique sua conexão e tente de novo.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <Button className="w-full" onClick={() => navigate("/")}>Voltar ao painel</Button>
+          <CardContent className="flex gap-3">
+            <Button onClick={() => void refetch()}>Tentar novamente</Button>
+            <Button variant="ghost" onClick={() => void signOut()}>Sair</Button>
           </CardContent>
         </Card>
       </div>
     );
   }
+
+  // Cadastro já enviado (inclusive logo após o submit): documentos e situação da conta.
+  if (status.status !== "not_started") return <KycDocuments />;
 
   const current = personType === "FISICA" ? pf : pj;
   const setCurrent = personType === "FISICA" ? setPf : (setPj as typeof setPf);
@@ -485,6 +494,9 @@ export default function Onboarding() {
 
             <Button type="submit" className="w-full" disabled={submit.isPending}>
               {submit.isPending ? "Enviando..." : "Enviar cadastro"}
+            </Button>
+            <Button type="button" variant="ghost" className="w-full" onClick={() => void signOut()}>
+              Sair e continuar depois
             </Button>
           </form>
         </CardContent>

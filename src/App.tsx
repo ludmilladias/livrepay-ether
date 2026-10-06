@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { RequireRole } from "@/components/auth/require-role";
+import { OnboardingGate, OnboardingBanner } from "@/components/auth/onboarding-gate";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { TopBar } from "@/components/layout/top-bar";
@@ -31,16 +32,22 @@ import Transferencias from "./pages/pagamentos/Transferencias";
 import Contas from "./pages/pagamentos/Contas";
 import Folha from "./pages/pagamentos/Folha";
 
-// Seguros
-import Catalogo from "./pages/seguros/Catalogo";
-import Cotacoes from "./pages/seguros/Cotacoes";
-import Apolices from "./pages/seguros/Apolices";
-import Sinistros from "./pages/seguros/Sinistros";
-
-// Cartões & Wallet
-import Virtuais from "./pages/cartoes/Virtuais";
-import Limites from "./pages/cartoes/Limites";
-import ExtratosCartoes from "./pages/cartoes/Extratos";
+// Seguros e Cartões & Wallet: FORA DA NAVEGAÇÃO por decisão da dona do produto
+// (2026-10). As telas em src/pages/seguros/* e src/pages/cartoes/* foram
+// preservadas (servem para demonstração comercial), mas não têm backend: são
+// arrays fixos e não persistidos. Para voltarem, é preciso antes:
+//   - Cartões: definir o emissor de cartão (parceiro/BIN) e criar rota + tabelas;
+//   - Seguros: definir o modelo de cotação de seguro (seguradora/precificação).
+// Aí: reativar os imports e as rotas comentadas abaixo, o grupo no
+// app-sidebar.tsx e a ação "Cotar Seguro" em dashboard/quick-actions.tsx.
+//
+// import Catalogo from "./pages/seguros/Catalogo";
+// import Cotacoes from "./pages/seguros/Cotacoes";
+// import Apolices from "./pages/seguros/Apolices";
+// import Sinistros from "./pages/seguros/Sinistros";
+// import Virtuais from "./pages/cartoes/Virtuais";
+// import Limites from "./pages/cartoes/Limites";
+// import ExtratosCartoes from "./pages/cartoes/Extratos";
 
 // Relatórios
 import ExtratosRelatorios from "./pages/relatorios/Extratos";
@@ -77,7 +84,9 @@ const App = () => (
               path="*"
               element={
                 <ProtectedRoute>
-                  <AppShell />
+                  <OnboardingGate>
+                    <AppShell />
+                  </OnboardingGate>
                 </ProtectedRoute>
               }
             />
@@ -95,6 +104,7 @@ const AppShell = () => (
             <div className="flex-1 flex flex-col">
               <TopBar />
               <main className="flex-1 p-8 overflow-auto ml-4">
+                <OnboardingBanner />
                 <Routes>
                   <Route path="/" element={<Index />} />
                   
@@ -115,16 +125,10 @@ const AppShell = () => (
                   <Route path="/pagamentos/contas" element={<Contas />} />
                   <Route path="/pagamentos/folha" element={<Folha />} />
                   
-                  {/* Seguros Routes */}
-                  <Route path="/seguros/catalogo" element={<Catalogo />} />
-                  <Route path="/seguros/cotacoes" element={<Cotacoes />} />
-                  <Route path="/seguros/apolices" element={<Apolices />} />
-                  <Route path="/seguros/sinistros" element={<Sinistros />} />
-                  
-                  {/* Cartões & Wallet Routes */}
-                  <Route path="/cartoes/virtuais" element={<Virtuais />} />
-                  <Route path="/cartoes/limites" element={<Limites />} />
-                  <Route path="/cartoes/extratos" element={<ExtratosCartoes />} />
+                  {/* Seguros e Cartões & Wallet: rotas removidas (ver comentário nos imports acima).
+                      Quem acessar /seguros/* ou /cartoes/* cai no NotFound. Para reativar:
+                      <Route path="/seguros/catalogo" element={<Catalogo />} /> (+ cotacoes, apolices, sinistros)
+                      <Route path="/cartoes/virtuais" element={<Virtuais />} /> (+ limites, extratos) */}
                   
                   {/* Relatórios Routes */}
                   <Route path="/relatorios/extratos" element={<ExtratosRelatorios />} />

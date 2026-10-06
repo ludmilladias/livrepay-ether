@@ -5,8 +5,7 @@ import {
   Receipt,
   CreditCard,
   TrendingUp,
-  Shield,
-  Wallet,
+  ClipboardCheck,
   FileText,
   Link,
   FileBarChart,
@@ -17,6 +16,7 @@ import {
   ShieldCheck,
 } from "lucide-react"
 import { useProfile } from "@/hooks/use-profile"
+import { useKycJourney } from "@/hooks/use-onboarding"
 
 import {
   Sidebar,
@@ -67,25 +67,18 @@ const moduleItems = [
       { title: "Folha/Lotes", url: "/pagamentos/folha" },
     ]
   },
-  {
-    title: "Seguros",
-    icon: Shield,
-    items: [
-      { title: "Catálogo", url: "/seguros/catalogo" },
-      { title: "Cotações", url: "/seguros/cotacoes" },
-      { title: "Apólices", url: "/seguros/apolices" },
-      { title: "Sinistros", url: "/seguros/sinistros" },
-    ]
-  },
-  {
-    title: "Cartões & Wallet",
-    icon: Wallet,
-    items: [
-      { title: "Cartões Virtuais", url: "/cartoes/virtuais" },
-      { title: "Limites", url: "/cartoes/limites" },
-      { title: "Extratos", url: "/cartoes/extratos" },
-    ]
-  },
+  // "Seguros" e "Cartões & Wallet" saíram da navegação por decisão da dona do
+  // produto (2026-10): as telas seguem em src/pages/{seguros,cartoes} só para
+  // demonstração comercial e não têm backend. Para voltarem: definir o emissor
+  // de cartão e o modelo de cotação de seguro, criar rotas/tabelas reais e então
+  // restaurar os grupos abaixo (ícones Shield e Wallet de lucide-react) junto
+  // com as rotas em App.tsx.
+  //   { title: "Seguros", icon: Shield, items: [
+  //       { title: "Catálogo", url: "/seguros/catalogo" }, { title: "Cotações", url: "/seguros/cotacoes" },
+  //       { title: "Apólices", url: "/seguros/apolices" }, { title: "Sinistros", url: "/seguros/sinistros" } ] },
+  //   { title: "Cartões & Wallet", icon: Wallet, items: [
+  //       { title: "Cartões Virtuais", url: "/cartoes/virtuais" }, { title: "Limites", url: "/cartoes/limites" },
+  //       { title: "Extratos", url: "/cartoes/extratos" } ] },
   {
     title: "Relatórios",
     icon: FileText,
@@ -117,6 +110,7 @@ export function AppSidebar() {
   const currentPath = location.pathname
   const collapsed = state === "collapsed"
   const { data: profile } = useProfile()
+  const { stage } = useKycJourney()
 
   const roles = profile?.roles ?? []
   const isStaff = roles.includes("admin") || roles.includes("compliance")
@@ -157,7 +151,13 @@ export function AppSidebar() {
         {/* Main Navigation */}
         <SidebarGroup>
           <SidebarMenu className="space-y-1">
-            {mainItems.map((item) => (
+            {[
+              ...mainItems,
+              // Caminho de volta para a abertura de conta enquanto ela não termina.
+              ...(!isStaff && stage && stage !== "approved"
+                ? [{ title: "Abertura de conta", url: "/onboarding", icon: ClipboardCheck }]
+                : []),
+            ].map((item) => (
               <SidebarMenuItem key={item.title}>
                 <SidebarMenuButton asChild className="h-10">
                   <NavLink to={item.url} className={getNavCls(isActive(item.url))}>
