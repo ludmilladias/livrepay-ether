@@ -6,6 +6,7 @@ import { config } from "../config.js";
 import { authQuery, withUser } from "../db.js";
 import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
+import { createDocumentUploadRouter } from "./onboarding-documents.js";
 import {
   signAccessToken,
   issueRefreshToken,
@@ -605,5 +606,39 @@ authRouter.get(
         checklist: null,
       });
     }
+  }),
+);
+
+/**
+ * POST /auth/onboarding/documents/:type — upload de documento de KYC (ver
+ * onboarding-documents.js). Dependências reais injetadas aqui.
+ */
+authRouter.use(
+  "/onboarding/documents",
+  createDocumentUploadRouter({
+    loadProfile: (userId) =>
+      withUser(userId, async (client) => {
+        const { rows } = await client.query(
+          `select ether_user_id, ether_account_status, ether_pix_key, ether_pix_key_type
+             from public.profiles where id = $1`,
+          [userId],
+        );
+        return rows[0] ?? null;
+      }),
+    syncLocalStatus: async (userId, etherStatus, currentLocal) => {
+      const next = toLocalStatus(etherStatus);
+      if (next === currentLocal) return;
+      const { withService } = await import("../db.js");
+      await withService(async (client) => {
+        await client.query(
+          `update public.profiles set ether_account_status = $2 where id = $1`,
+          [userId, next],
+        );
+      });
+    },
+    ether: {
+      uploadDocument: async (...a) => (await import("../ether.js")).uploadDocument(...a),
+      getAccountStatus: async (...a) => (await import("../ether.js")).getAccountStatus(...a),
+    },
   }),
 );
