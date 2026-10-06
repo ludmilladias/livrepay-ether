@@ -12,6 +12,7 @@ import { TopBar } from "@/components/layout/top-bar";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import Auth from "./pages/Auth";
+import Onboarding from "./pages/Onboarding";
 
 // Cobrança
 import Links from "./pages/cobranca/Links";
@@ -64,6 +65,14 @@ const App = () => (
         <AuthProvider>
           <Routes>
             <Route path="/auth" element={<Auth />} />
+            <Route
+              path="/onboarding"
+              element={
+                <ProtectedRoute>
+                  <Onboarding />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="*"
               element={

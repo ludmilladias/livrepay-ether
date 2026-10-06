@@ -37,10 +37,12 @@ export default function Auth() {
     try {
       if (mode === "signin") {
         await auth.login(email, password);
+        window.location.replace(next);
       } else {
         await auth.register(email, password, fullName);
+        // Cadastro novo nunca tem KYC ainda — manda direto para o onboarding da Ether.
+        window.location.replace("/onboarding");
       }
-      window.location.replace(next);
     } catch (error) {
       setBusy(false);
       setMessage(error instanceof Error ? error.message : "Não foi possível concluir.");
