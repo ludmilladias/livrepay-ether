@@ -1,5 +1,6 @@
 import { verifyAccessToken } from "./tokens.js";
 import { withUser } from "./db.js";
+import { errorLogFields } from "./safeLog.js";
 
 /** Erro de negócio com status HTTP — o handler global sabe traduzir. */
 export class ApiError extends Error {
@@ -56,6 +57,17 @@ export function requireRole(...roles) {
       next(error);
     }
   };
+}
+
+/**
+ * Callback `verify` do express.json: guarda os BYTES recebidos em req.rawBody,
+ * só para /webhooks. Assinatura de emissor (HMAC) é sobre os bytes enviados —
+ * recalcular sobre JSON.stringify(req.body) quebra com qualquer diferença de
+ * espaçamento, ordem de chave ou escape de unicode e rejeitaria webhooks
+ * legítimos. Restrito ao prefixo para não reter buffers das demais rotas.
+ */
+export function captureRawBody(req, _res, buf) {
+  if (req.originalUrl?.startsWith("/webhooks")) req.rawBody = buf;
 }
 
 /** Valida o corpo com um schema zod e substitui req.body pelo dado limpo. */
@@ -133,6 +145,8 @@ export function errorHandler(err, req, res, _next) {
     return res.status(422).json({ error: message, code: "BUSINESS_RULE" });
   }
 
-  console.error("Erro não tratado", { path: req.path, userId: req.userId, err });
+  // Nunca o objeto cru: em violação de constraint o `detail` do Postgres traz a
+  // linha inteira ("Failing row contains (...)" com tax_id/phone).
+  console.error("Erro não tratado", { path: req.path, userId: req.userId, ...errorLogFields(err) });
   return res.status(500).json({ error: "Erro interno do servidor" });
 }

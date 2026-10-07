@@ -19,9 +19,14 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # Passos independentes: `!cancelled()` faz cada um rodar mesmo se o anterior
+      # falhar. Antes, um erro de lint impedia typecheck e build de executarem —
+      # por um erro pré-existente em tailwind.config.ts, os dois nunca chegavam a rodar.
       - run: npm run lint
       - run: npm run typecheck
+        if: ${{ !cancelled() }}
       - run: npm run build
+        if: ${{ !cancelled() }}
 
   db-security-tests:
     runs-on: ubuntu-latest
@@ -40,5 +45,19 @@ jobs:
           cache-dependency-path: server/package-lock.json
       - working-directory: server
         run: npm ci
+      # Um passo por suíte (e `!cancelled()`): a falha de uma não esconde as outras.
+      # Todas rodam offline: Postgres e Ether são falsos/mockados, nenhuma chamada real.
       - working-directory: server
         run: npm run test:ether
+      - working-directory: server
+        run: npm run test:onboarding
+        if: ${{ !cancelled() }}
+      - working-directory: server
+        run: npm run test:documents
+        if: ${{ !cancelled() }}
+      - working-directory: server
+        run: npm run test:privacy
+        if: ${{ !cancelled() }}
+      - working-directory: server
+        run: npm run test:webhook
+        if: ${{ !cancelled() }}

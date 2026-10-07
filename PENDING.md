@@ -7,25 +7,131 @@
 > falhas financeiras críticas (auto-crédito via `/receivables/:id/advance` e liquidação de
 > cobrança sem conferência de valor) + 4 achados médios (ver SECURITY.md, seção "Barreira
 > crítica: quem pode creditar" e tabela "Banco de dados"). Migration
-> `20260820000000_close_settlement_gaps.sql`, testes T2b e T29-T32 novos (32 no total).
+> `20260820000000_close_settlement_gaps.sql`, testes T2b e T29-T32 novos (32 no total na época; hoje T1-T38).
 >
 > **2026-09-17**: o bloqueio de credencial da Ether (seção 1, "Testado contra a Ether de
 > produção...") **foi resolvido** — a Ether entregou um par de credenciais de integração
 > válido. Detalhe e evidência na entrada "2026-09-17 — DESBLOQUEADO" dentro da seção 1.
+>
+> **2026-10-06 — vazamento de ledger pessoal para staff via RLS, corrigido**: a policy
+> `"transactions: staff le todas"` (`20260821010000_reports_staff_read.sql`), criada só para o
+> gráfico agregado de `/admin/reports/volume`, valia por SESSÃO/ROLE, não por rota — qualquer
+> admin/compliance que chamasse as rotas PESSOAIS `GET /reports/statement`,
+> `GET /reports/financials` e `GET /transactions` (`server/src/routes/reports.js` e `core.js`,
+> gate só `requireAuth`, sem filtro de conta na query) lia o ledger de TODOS os usuários, não só
+> o seu (`accounts`/saldo continuava isolado — sem policy de staff nessa tabela). Achado nesta
+> sessão, nunca explorado em produção (sem evidência de uso indevido). A correção (causa raiz,
+> migration `20260906010000_fix_transactions_staff_leak.sql`) já existia no working tree antes
+> desta sessão: derruba a policy ampla e move a agregação de staff para
+> `admin_transactions_volume()` (`SECURITY DEFINER`, guard de role interno), chamada só por
+> `GET /admin/reports/volume`. Nesta sessão: adicionado teste de regressão **T39** (prova que
+> compliance não lê `transactions` de outro usuário via RLS direta e que a function agregada
+> continua funcionando só para staff) e corrigida uma asserção desatualizada em
+> `server/tests/e2e.sh` que ainda exigia o comportamento vulnerável antigo em `GET /transactions`.
+> `npm run db:test` (39 blocos), `test:ether`, `test:onboarding-link` e `bash server/tests/e2e.sh`
+> (103 OK, 0 falha, 4 puladas por padrão) rodados limpos após o fix.
+>
+> **2026-10-06 — segundo achado, mesmo padrão: vazamento de recebíveis pessoais para staff via
+> RLS, corrigido**: a policy `"receivables: staff le todos"` (`20260821000000_admin_panel.sql`),
+> criada só para o painel admin listar recebíveis pendentes de verificação
+> (`GET /admin/receivables`), valia por SESSÃO/ROLE, não por rota — qualquer admin/compliance que
+> chamasse as rotas PESSOAIS `GET /receivables` e `GET /receivables/summary`
+> (`server/src/routes/receivables.js`, gate só `requireAuth`, sem filtro de `user_id` na query,
+> porque a RLS "usuário lê os próprios" bastava até aqui) lia `gross_cents`/`net_cents`/
+> `due_date`/`status` de recebíveis de TODOS os usuários, não só o seu. Achado por revisor
+> independente (read-only) nesta sessão, nunca explorado em produção (sem evidência de uso
+> indevido). Correção (causa raiz, migration `20261006000000_fix_receivables_staff_leak.sql`,
+> mesmo padrão de `20260906010000_fix_transactions_staff_leak.sql`): derruba a policy ampla e move
+> a listagem agregada de `/admin/receivables` para `admin_receivables_list()` (`SECURITY
+> DEFINER`, guard de role interno), chamada só por essa rota (`server/src/routes/admin.js`); as
+> rotas pessoais (`server/src/routes/receivables.js`) não ganharam filtro de `user_id` — voltam a
+> ficar isoladas só pela RLS, de propósito, igual já documentado em `reports.js` para o caso de
+> `transactions`. Teste de regressão **T40** adicionado (compliance não lê `receivables` de outro
+> usuário via RLS direta; `admin_receivables_list()` segue agregando para staff e nega para
+> `support`); isso também exigiu ajustar T33/T34 (compliance passou a localizar/validar o
+> recebível de Bob via `admin_receivables_list()`/retorno da function, não mais via `SELECT`
+> direto em `receivables`, já que a policy ampla que isso dependia foi removida).
+> `db/tests/run-tests.sh` (40 blocos), `test:ether` (29 OK), `test:onboarding-link` (33 OK) e
+> `bash server/tests/e2e.sh` (103 OK, 0 falha, 4 puladas por padrão) rodados limpos após o fix.
+
+Leia [SECURITY.md](SECURITY.md) antes de tocar em qualquer coisa que envolva dinheiro,
+autenticação ou a integração com a Ether.
 
 ## Como retomar uma sessão
 
 ```bash
 docker compose up -d --build   # .env já existe e está preenchido com credencial Ether válida
-npm run db:test              # 32 asserções no banco
-bash server/tests/e2e.sh     # 48 asserções na API — por padrão NÃO executa pagamento real
+npm run db:test              # 39 blocos numerados (T1-T39) no banco
+bash server/tests/e2e.sh     # 107 asserções na API (103 executadas + 4 puladas) — por padrão NÃO executa pagamento real
                                # (ver ETHER_ALLOW_REAL_PAYMENTS na seção 1, "2026-09-17")
 cd server && npm run test:ether && cd ..  # retry/timeout do cliente Ether contra mock
+cd server && npm run test:onboarding && npm run test:documents \
+  && npm run test:privacy && npm run test:webhook && cd ..   # offline, sem Postgres/Ether
 npm run typecheck && npm run dev
 ```
 
+> **2026-10-06 — jornada de abertura de conta (etapas 1 a 4)**: ver a seção "Jornada de conta
+> completa" logo abaixo. Quase tudo que o diagnóstico de onboarding abaixo descreve como
+> "pendente" foi tratado; o histórico foi mantido porque explica por que as coisas estão como estão.
+
 Leia [SECURITY.md](SECURITY.md) antes de tocar em qualquer coisa que envolva dinheiro,
 autenticação ou a integração com a Ether.
+
+---
+
+## Jornada de conta completa (sem dinheiro) — etapas 1 a 4, branch `feat/jornada-conta-completa`
+
+Alvo: o cliente consegue se cadastrar, preencher o cadastro de abertura de conta, enviar os
+documentos de KYC e acompanhar o status — **sem nenhuma movimentação de dinheiro** (PIX e
+pagamento seguem desligados, 503, até a Ether explicar como autenticar como sub-conta).
+
+| Etapa | Commit | Entregue |
+|---|---|---|
+| 1 | `56337ac` | Trigger de proteção dos campos `ether_*` corrigido (migration `20260906000000_fix_ether_tamper_trigger.sql`, testes **T37**/**T38**); rota de emissão de cobrança **removida do router** (era `/:id/emit-disabled`, alcançável por qualquer usuário autenticado). Resta só o corpo preservado em comentário/função, sem URL. |
+| 2 | `85e86eb` | `POST /auth/onboarding/documents/:type` (corpo binário cru, magic bytes, `ether_user_id` sempre do perfil do JWT, sem PII em log) + `test:documents`. |
+| 3 | `e3b6888` + `fa8c52c` | Interface: tela de cadastro, envio de documentos, gate de onboarding, status. |
+| 4 | (esta etapa, **não commitada**) | Itens abaixo. |
+
+**Etapa 4 — o que mudou:**
+
+1. **`address.city` normalizada no backend** (`server/src/cityslug.js`, aplicada em
+   `buildOnboardingPayload`): `"São Paulo"` + `SP` → `br-sp-sao-paulo`; idempotente para slug já
+   pronto; cidade sem caracteres úteis ou slug de outra UF dá 400 antes de qualquer chamada à
+   Ether. **Motivo**: texto livre nunca foi aceito em teste real e uma recusa pode queimar o CPF
+   na Ether (caso `USR_DUP_005`). Coberto em `test:onboarding`.
+2. **PII fora do log**: `server/src/safeLog.js` (`etherErrorFields`, `errorLogFields`) —
+   `auth.js` (cadastro, accept-terms, pep-declaration), `onboarding-documents.js` (helper agora
+   compartilhado), `payments.js`/`charges.js` (mesmo padrão `detail: error.body`, no caminho de
+   dinheiro), webhook (`Falha ao registrar evento`) e o handler genérico de `middleware.js`
+   (achados de segurança S-02 e S-04). Cobertura: `test:privacy`.
+3. **Webhook com corpo cru**: `express.json({ verify: captureRawBody })` guarda os bytes só em
+   `/webhooks`; o HMAC é calculado sobre eles, não sobre `JSON.stringify(req.body)`. Timestamp:
+   `Math.abs` removido (aceitava 5 min no futuro); agora 300 s para trás e 60 s de tolerância
+   para frente. Sem buffer cru, falha fechada (401). Cobertura: `test:webhook` (inclui
+   idempotência por `(provider, event_id)` e as rotas `/ether` e `/ether/:token`).
+4. **CI**: `tailwind.config.ts` usa `import` (o `require()` quebrava o lint e, por serem passos
+   sequenciais, **typecheck e build nunca executavam**); passos separados com `if: !cancelled()`;
+   job de servidor roda `test:ether`, `test:onboarding`, `test:documents`, `test:privacy` e
+   `test:webhook`.
+5. Esta documentação.
+
+**Ainda incerto / aberto depois da etapa 4:**
+- O slug gerado **nunca foi enviado à Ether para uma cidade que não seja `br-sp-sao-paulo`**
+  (único valor confirmado em teste real). A regra de acento/hífen/apóstrofo
+  (`Mogi-Guaçu` → `br-sp-mogi-guacu`, `d'Oeste` → `d-oeste`) é a convenção usual de slug, **não
+  confirmada** pela Ether. Cidades fora do padrão IBGE-slug dela podem ser recusadas.
+- **`hometown` (naturalidade) segue texto livre**, sem normalização: a doc só diz "Cidade natal do
+  usuário". Se a Ether também exigir slug ali, o mesmo risco de CPF queimado existe. Perguntar à
+  Ether ou testar com um CPF descartável antes do primeiro cliente real.
+- Nenhuma suíte exercita um cadastro real; o payload só foi verificado contra mock.
+- `HMAC` do webhook: a Ether ainda não entregou o segredo nem confirmou o formato
+  `t=...,v1=...` (assumido). Hoje o que está em uso é a rota `/webhooks/ether/:token`.
+- `e2e.sh`: a asserção "bob NÃO executa pagamento da alice" espera 404, mas desde o
+  desligamento do PIX (`a9d6244`) a rota responde 503 antes de consultar propriedade. Falha
+  preexistente, não causada pela etapa 4; **não foi alterada** para não enfraquecer o teste —
+  decidir se religa a checagem de propriedade antes do 503 ou se o teste aguarda a reativação.
+- `runProviderEvent` ainda grava `error.message` em `provider_events.error` e em log; as
+  mensagens vêm do nosso código ou do Postgres e não foram auditadas para ecoar valores.
 
 ---
 
@@ -310,6 +416,11 @@ auth distintos) — e nenhum dos 3 guias oficiais explica como essa senha é def
 sempre `503`** com mensagem clara, em vez de mover dinheiro pela conta pool. O código
 antigo foi preservado como `emit-disabled`/`executePaymentForUserDisabled` (não
 referenciado por nenhuma rota) para religar assim que o mecanismo de sub-conta funcionar.
+**Atualização 2026-10-06 (etapa 1)**: a rota `/:id/emit-disabled` **saiu do router** — o texto
+acima ("não referenciado por nenhuma rota") estava errado na época: ela existia e era
+alcançável por qualquer usuário autenticado. Hoje o corpo fica só como código preservado em
+`charges.js` (sem URL) e `executePaymentForUserDisabled` em `payments.js` (exportada, sem
+chamador).
 Decisão tomada com confirmação explícita da usuária (ação que desliga funcionalidade em
 produção).
 
@@ -337,7 +448,8 @@ Esse cadastro de teste fica retido no ambiente da Ether (somar aos anteriores; p
 
 Perguntas ao suporte que o teste respondeu de graça (RESOLVIDAS, não perguntar mais):
 - `address.city` aceita slug (`br-sp-sao-paulo`) — **o slug funciona**. Texto livre continua não
-  testado; o frontend deve enviar o slug.
+  testado; o frontend deve enviar o slug. *(2026-10-06: o backend agora normaliza qualquer
+  entrada para slug — `server/src/cityslug.js`; não depende mais do frontend.)*
 - `taxId` é aceito **sem máscara** (agora confirmado para PF, com o payload completo).
 - `maritalStatus` é aceito como `SOLTEIRO(A)`.
 
@@ -685,10 +797,24 @@ normalmente (200) — **produção não é afetada**, mas quem depurar com `curl
 
 **Sem assinatura HMAC no webhook** — a Ether só permite configurar a URL, sem header
 customizado documentado no OpenAPI estudado. O segredo hoje só é aceito via header
-`x-webhook-secret` — o fallback anterior de token na URL (`POST /ether/:token`) foi removido
-porque path/query de proxy e CDN costumam ir parar em log, o que vazaria o segredo. Se a Ether
-não suportar header customizado na configuração dela, falar com o suporte antes de reabrir
-esse fallback. Peça HMAC ao suporte da Ether e migre quando disponível.
+`x-webhook-secret`. Peça HMAC ao suporte da Ether e migre quando disponível.
+
+**Correção 2026-10-06 — a nota acima ("fallback de token na URL foi removido") estava
+desatualizada.** A rota `POST /webhooks/ether/:token` **existe no código**
+(`server/src/routes/webhook.js`, valida `ETHER_WEBHOOK_URL_TOKEN` em tempo constante,
+HMAC opcional como camada adicional se a Ether também mandar `X-Signature`). A usuária
+cadastrou essa URL no painel da Ether:
+
+```
+https://api.livrepay.digital/webhooks/ether/<ETHER_WEBHOOK_URL_TOKEN>
+```
+
+`.env` local confirma o valor de `ETHER_WEBHOOK_URL_TOKEN` batendo com a URL cadastrada; a
+usuária confirmou que essa mesma variável também está configurada no app de produção
+(DigitalOcean App Platform). Ainda não testado com um evento real da Ether chegando por
+essa rota — próximo passo é confirmar quando o primeiro webhook real (depósito PIX ou
+confirmação de saque) chegar e é processado corretamente (`provider_events` com
+`provider='ether'`).
 
 ---
 
@@ -764,7 +890,10 @@ antes de considerar totalmente encerrado.
 
 ## 4. Infraestrutura e operação
 
-- **Sem CI**: `db:test` / `e2e.sh` / `typecheck` só rodam manualmente.
+- **CI parcial** (`.github/workflows/ci.yml`): roda lint, typecheck e build (passos
+  independentes), `db:test` e as suítes offline do servidor (`test:ether`, `test:onboarding`,
+  `test:documents`, `test:privacy`, `test:webhook`). **Não roda `e2e.sh`** (precisa da stack e,
+  em potencial, de credencial Ether) nem nada de deploy.
 - **Sem compose de produção**: o `docker-compose.yml` atual é para dev/homologação (sem
   TLS, sem backup agendado, segredos em `.env`).
 - **Sem pipeline de deploy do frontend** nem Dockerfile/nginx próprios (o `nginx.conf`

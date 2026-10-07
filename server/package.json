@@ -9,7 +9,11 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test:ether": "node tests/ether.test.js",
-    "test:onboarding": "node tests/onboarding-schema.test.js"
+    "test:onboarding": "node tests/onboarding-schema.test.js",
+    "test:onboarding-link": "node tests/onboarding-link.test.js",
+    "test:documents": "node tests/onboarding-documents.test.js",
+    "test:privacy": "node tests/log-privacy.test.js",
+    "test:webhook": "node tests/webhook-signature.test.js"
   },
   "dependencies": {
     "amazon-cognito-identity-js": "^6.3.20",

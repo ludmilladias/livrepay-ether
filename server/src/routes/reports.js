@@ -7,7 +7,20 @@ export const reportsRouter = Router();
 
 reportsRouter.use(requireAuth);
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data deve ser YYYY-MM-DD");
+// ATENÇÃO: nunca chame auth.uid() no TEXTO da query. A role `authenticated` não
+// tem USAGE no schema `auth` (só as policies, que rodam com outro contexto, o
+// resolvem) — a query explícita falha com 42501 e a rota vira 403 para TODOS os
+// usuários (era o caso de /statement e /financials até 2026-10-06, achado pelo
+// e2e). O filtro por dono é a RLS; `accounts` só tem a policy "lê as próprias".
+// Além do formato, a data tem de EXISTIR (2026-13-45 passava na regex e virava
+// 500 ao chegar no `::date` do Postgres). Round-trip por Date em UTC.
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Data deve ser YYYY-MM-DD")
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, "Data inexistente");
 
 // --- Fluxo de caixa (dashboard do cliente) ------------------------------------
 //
@@ -42,6 +55,12 @@ reportsRouter.get(
 //
 // Extrato de verdade a partir do ledger imutável — sem tabela de "extratos
 // gerados" nem contador fictício: o próprio período consultado É o extrato.
+// Isolamento por conta vem só da RLS "transactions: usuário lê as próprias"
+// (20260811120000) — até 2026-10-06 existia também uma policy de staff que
+// vazava o ledger de todos os usuários pra quem tinha role admin/compliance
+// (removida em 20260906010000). Não adicione aqui nenhum filtro por role
+// pensando em "liberar mais" para staff: a visão agregada de staff tem rota
+// própria e isolada (GET /admin/reports/volume).
 reportsRouter.get(
   "/statement",
   asyncRoute(async (req, res) => {
@@ -63,7 +82,7 @@ reportsRouter.get(
 
     const statement = await withUser(req.userId, async (client) => {
       const account = await client.query(
-        `select balance_cents from public.accounts where user_id = auth.uid() limit 1`,
+        `select balance_cents from public.accounts order by created_at limit 1`,
       );
       const currentBalance = account.rows[0]?.balance_cents ?? 0;
 
@@ -152,6 +171,9 @@ reportsRouter.get(
 );
 
 // --- Financeiro (Relatórios > Financeiro) --------------------------------------
+//
+// Mesma base de isolamento do /statement acima: só a RLS "usuário lê as
+// próprias" em transactions, nenhuma policy de staff (ver 20260906010000).
 reportsRouter.get(
   "/financials",
   asyncRoute(async (req, res) => {
@@ -160,7 +182,7 @@ reportsRouter.get(
     const financials = await withUser(req.userId, async (client) => {
       const [balance, period30d, monthly, revenueByKind, expenseByKind] = await Promise.all([
         client.query(
-          `select balance_cents from public.accounts where user_id = auth.uid() limit 1`,
+          `select balance_cents from public.accounts order by created_at limit 1`,
         ),
         client.query(
           `select coalesce(sum(amount_cents) filter (where type = 'credit'), 0)::bigint as in_cents,

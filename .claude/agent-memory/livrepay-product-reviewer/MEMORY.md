@@ -1,0 +1,2 @@
+- [Bloqueio da sub-conta Ether](project_bloqueio_subconta_ether.md) — por que PIX/pagamento estão em 503 e o que isso trava em cadeia.
+- [Lacunas de interface](project_lacunas_interface.md) — backend entrega dado que nenhuma tela consome (checklist, status KYC, upload).

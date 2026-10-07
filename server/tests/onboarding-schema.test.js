@@ -63,6 +63,9 @@ for (const f of ["website", "socialNetwork", "companyInfo"]) {
 check("document.type CARTAO_CNPJ continua rejeitado", !onboardingSchema.safeParse({ ...pj, documentType: "CARTAO_CNPJ" }).success);
 check("PJ sem documentType é válido (default vale p/ PF e PJ)", onboardingSchema.safeParse(pj).success);
 
+check("PJ com CPF (11 digitos) rejeitado", !onboardingSchema.safeParse({ ...pj, taxId: "12345678900" }).success);
+check("PF com CNPJ (14 digitos) rejeitado", !onboardingSchema.safeParse({ ...pf, taxId: "12345678000190" }).success);
+
 const titular = { full_name: "Fulano", email: "f@x.com" };
 const parse = (v) => onboardingSchema.parse(v);
 
@@ -89,6 +92,56 @@ check("PF: cnaeId/assessment/legalNature descartados do profile",
 check("PF: companyInfo descartado", !("companyInfo" in pay));
 check("PF: gender/maritalStatus mantidos", pay.profile.gender === "HOMEM_CISGENERO" && pay.profile.maritalStatus === "SOLTEIRO(A)");
 check("taxId segue sem máscara no payload", pay.profile.taxId === "12345678900");
+
+// --- address.city -> slug --------------------------------------------------
+// A forma livre NUNCA foi aceita em teste real pela Ether (só o slug); recusa pode
+// queimar o CPF lá (USR_DUP_005). O backend garante o slug. Ver server/src/cityslug.js.
+const { toCitySlug } = await import("../src/cityslug.js");
+const slugCases = [
+  ["São Paulo", "SP", "br-sp-sao-paulo"],
+  ["Porto Alegre", "RS", "br-rs-porto-alegre"],
+  ["  são   paulo  ", "sp", "br-sp-sao-paulo"], // espaços extras, minúsculas
+  ["SÃO PAULO", "SP", "br-sp-sao-paulo"],
+  ["Mogi-Guaçu", "SP", "br-sp-mogi-guacu"], // hífen no nome + cedilha
+  ["Santa Bárbara d'Oeste", "SP", "br-sp-santa-barbara-d-oeste"], // apóstrofo
+  ["Santa Bárbara d’Oeste", "SP", "br-sp-santa-barbara-d-oeste"], // apóstrofo tipográfico
+  ["Brasília", "DF", "br-df-brasilia"],
+  ["Foz do Iguaçu", "PR", "br-pr-foz-do-iguacu"],
+  ["Olho d'Água do Casado", "AL", "br-al-olho-d-agua-do-casado"],
+  ["Pindamonhangaba.", "SP", "br-sp-pindamonhangaba"], // pontuação final
+  ["Cidade 2", "SP", "br-sp-cidade-2"],
+  // idempotência: já é slug -> não transforma de novo
+  ["br-sp-sao-paulo", "SP", "br-sp-sao-paulo"],
+  ["br-sp-mogi-guacu", "SP", "br-sp-mogi-guacu"],
+  ["BR-SP-SAO-PAULO", "sp", "br-sp-sao-paulo"],
+  ["  br-rs-porto-alegre ", "RS", "br-rs-porto-alegre"],
+];
+for (const [city, uf, want] of slugCases) {
+  const got = toCitySlug(city, uf);
+  check(`slug: ${JSON.stringify(city)} + ${uf} -> ${want}`, got === want, `obtido ${got}`);
+}
+for (const [city, uf, want] of slugCases) {
+  const once = toCitySlug(city, uf);
+  check(`idempotente: slug(slug(${JSON.stringify(city)})) estável`, toCitySlug(once, uf) === once && once === want);
+}
+check("slug de outra UF é recusado (null), não repassado", toCitySlug("br-rs-porto-alegre", "SP") === null);
+check("cidade sem caracteres úteis -> null", toCitySlug("!!!", "SP") === null && toCitySlug("   ", "SP") === null);
+check("UF inválida -> null", toCitySlug("São Paulo", "S") === null && toCitySlug("São Paulo", "12") === null && toCitySlug("São Paulo", undefined) === null);
+
+// Fim a fim no payload enviado à Ether (função real, sem I/O).
+const cityPay = (city, state) => buildOnboardingPayload(parse({ ...pf, address: { ...address, city, state } }), titular);
+check("payload: 'São Paulo'/SP sai como br-sp-sao-paulo", cityPay("São Paulo", "SP").address.city === "br-sp-sao-paulo");
+check("payload: 'Mogi-Guaçu'/SP sai como br-sp-mogi-guacu", cityPay("Mogi-Guaçu", "SP").address.city === "br-sp-mogi-guacu");
+check("payload: \"Santa Bárbara d'Oeste\"/SP sai como br-sp-santa-barbara-d-oeste", cityPay("Santa Bárbara d'Oeste", "SP").address.city === "br-sp-santa-barbara-d-oeste");
+check("payload: slug já pronto passa intacto", cityPay("br-sp-sao-paulo", "SP").address.city === "br-sp-sao-paulo");
+check("payload: demais campos do endereço preservados", (() => { const a = cityPay("São Paulo", "SP").address; return a.state === "SP" && a.zipcode === "90020007" && a.street === "Rua A" && a.country === "BR"; })());
+check("schema: cidade '!!!' rejeitada", !onboardingSchema.safeParse({ ...pf, address: { ...address, city: "!!!" } }).success);
+check("schema: slug de outra UF rejeitado", !onboardingSchema.safeParse({ ...pf, address: { ...address, city: "br-rs-porto-alegre", state: "SP" } }).success);
+check("normalizar não muta o objeto validado", (() => {
+  const v = parse({ ...pf, address: { ...address, city: "São Paulo", state: "SP" } });
+  buildOnboardingPayload(v, titular);
+  return v.address.city === "São Paulo";
+})());
 
 console.log(FAIL ? `\n${FAIL} falha(s)` : "\ntudo ok");
 process.exit(FAIL ? 1 : 0);

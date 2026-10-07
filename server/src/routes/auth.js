@@ -6,6 +6,9 @@ import { config } from "../config.js";
 import { authQuery, withUser } from "../db.js";
 import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
+import { createDocumentUploadRouter } from "./onboarding-documents.js";
+import { toCitySlug } from "../cityslug.js";
+import { errorLogFields, etherErrorFields } from "../safeLog.js";
 import {
   signAccessToken,
   issueRefreshToken,
@@ -267,9 +270,15 @@ const canonicalEnum = (canonical, aliases = {}) => {
  * além dele. Para CNPJ não há teste real ainda. Não alterar sem novo erro
  * apontando taxId.
  *
- * ATENÇÃO address.city: o guia mostra um slug ("br-rs-porto-alegre"), não o
- * nome. Repassamos o valor recebido sem transformar (regra do slug não
- * confirmada).
+ * address.city: o guia mostra um slug ("br-rs-porto-alegre") e o teste real só
+ * aceitou o slug. Texto livre ("São Paulo") NUNCA foi aceito em teste real, e uma
+ * recusa pode queimar o CPF na Ether (caso USR_DUP_005). Por isso
+ * buildOnboardingPayload normaliza para slug no backend (server/src/cityslug.js);
+ * o schema só rejeita cidade que não gera slug confiável.
+ *
+ * NÃO RESOLVIDO: `hometown` (naturalidade) também é texto livre e segue sem
+ * transformação — a doc só diz "Cidade natal do usuário", sem exemplo, e não há
+ * teste real do formato. Ver PENDING.md.
  *
  * DOIS VOCABULÁRIOS DE DOCUMENTO — NÃO UNIFICAR (não é duplicação):
  *  1) `document.type` (passo 1, profile-data): documento PESSOAL de identidade.
@@ -345,7 +354,7 @@ export const onboardingSchema = z
       number: z.string().min(1).max(20),
       complement: z.string().max(100).optional(),
       district: z.string().min(1).max(100),
-      city: z.string().min(1).max(100), // ver aviso sobre slug acima
+      city: z.string().min(1).max(100), // normalizado p/ slug em buildOnboardingPayload
       state: z.string().length(2),
       country: canonicalEnum(["BR", "Brasil"]).default("BR"), // obrigatório na Ether; default BR
       caixaPostal: z.number().int().min(0).default(0),
@@ -369,11 +378,28 @@ export const onboardingSchema = z
         if (b[field] === undefined) ctx.addIssue({ code: "custom", path: [field], message: `Obrigatório para ${why}` });
       }
     };
+    // taxId tem de combinar com personType (CPF=11 dígitos é FISICA; CNPJ=14 é
+    // JURIDICA). A regex do campo aceita os dois tamanhos; sem este cruzamento um
+    // CPF com personType JURIDICA seguiria até a Ether, que o recusa — e cada
+    // recusa de cadastro pode queimar o documento do lado dela (USR_DUP_005).
+    const expectedLen = b.personType === "FISICA" ? 11 : 14;
+    if (b.taxId.length !== expectedLen) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["taxId"],
+        message: b.personType === "FISICA" ? "Pessoa física exige CPF (11 dígitos)" : "Pessoa jurídica exige CNPJ (14 dígitos)",
+      });
+    }
     if (b.personType === "FISICA") {
       need(["nationality", "maritalStatus", "monthlyIncome", "hometown"], "pessoa física");
       need(["documentIssuingAgency", "documentIssueDate", "documentIssueState"], "pessoa física");
     } else {
       need(["companyInfo", "website", "socialNetwork"], "pessoa jurídica");
+    }
+    // Cidade que não vira slug confiável (sem letras/dígitos, ou slug de outra UF)
+    // é recusada AQUI, antes de qualquer chamada à Ether.
+    if (toCitySlug(b.address.city, b.address.state) === null) {
+      ctx.addIssue({ code: "custom", path: ["address", "city"], message: "Cidade inválida para a UF informada" });
     }
   });
 
@@ -429,7 +455,8 @@ export function buildOnboardingPayload(b, titular) {
         ...(!isPF ? { cnaeId: b.cnaeId, assessment: b.assessment, legalNature: b.legalNature } : {}),
       }),
     },
-    address: b.address,
+    // city -> slug (ver cityslug.js). O schema já garantiu que não é null.
+    address: { ...b.address, city: toCitySlug(b.address.city, b.address.state) },
     document: {
       // PF e PJ: CARTEIRA_IDENTIDADE por padrão. Em PJ este objeto é o documento
       // pessoal do REPRESENTANTE LEGAL (guia PJ). "CARTAO_CNPJ" NÃO vale aqui —
@@ -444,6 +471,115 @@ export function buildOnboardingPayload(b, titular) {
     },
     // companyInfo só em PJ (doc: não enviar em PF).
     ...(!isPF && b.companyInfo ? { companyInfo: b.companyInfo } : {}),
+  };
+}
+
+/**
+ * Cria a conta na Ether e GRAVA O VÍNCULO LOCAL (profiles.ether_user_id).
+ * Também é o caminho de RECONCILIAÇÃO de contas órfãs.
+ *
+ * O problema: criar na Ether e gravar o vínculo aqui são dois sistemas, sem
+ * transação comum. Se o `update` falha (foi o que aconteceu com o trigger
+ * quebrado, antes de 20260906000000), a conta existe na Ether sem vínculo local.
+ *
+ * Por que a reconciliação é "o usuário reenvia o onboarding" e NÃO um script nem
+ * uma rota admin que aceite um ether_user_id: (1) a Ether não tem busca por
+ * e-mail — o único jeito de recuperar o userId é repetir `POST /users/profile-data`,
+ * que faz upsert por e-mail e devolve o MESMO userId com `recovery: true`; e esse
+ * POST exige o payload completo (CPF, endereço...), que NÃO guardamos para quem
+ * ficou órfão; (2) o vínculo é a âncora de identidade financeira — uma primitiva
+ * "ligue este usuário àquele ether_user_id" digitada por humano, com um typo ou
+ * um e-mail trocado, ligaria alguém à conta bancária de outra pessoa. Aqui o
+ * userId só vem da resposta da Ether a uma requisição autenticada pelo JWT do
+ * próprio usuário, com o e-mail lido de auth.users (nunca do corpo).
+ * Reenviar, portanto, converge sozinho; o que faltava era (a) não deixar a
+ * janela de órfã aberta e (b) nunca falhar em silêncio.
+ *
+ * Ordem: o vínculo é gravado LOGO após o createUserProfile, antes de
+ * accept-terms/pep (duas chamadas de até 15 s cada, que antes ficavam dentro da
+ * janela). Se a gravação falha: loga os ids (sem PII) para reconciliação manual
+ * e responde 503 — reenviar recupera a conta. Se o userId já pertence a OUTRO
+ * perfil (índice único profiles_ether_user_id_idx): 409, sem sobrescrever.
+ *
+ * Dependências injetadas para teste sem Ether nem banco.
+ */
+export async function createAndLinkEtherAccount(
+  { userId, payload, taxId, phone, userAgent },
+  { createUserProfile, acceptTerms, submitPepDeclaration, withService },
+) {
+  let etherResult;
+  try {
+    etherResult = await createUserProfile(payload);
+  } catch (error) {
+    // Nunca error.body: a Ether ecoa o valor rejeitado (CPF, nascimento, renda).
+    console.error("Ether recusou o cadastro do cliente", { userId, ...etherErrorFields(error) });
+    throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
+  }
+
+  const etherUserId = etherResult.userId ?? etherResult.id;
+  if (!etherUserId) {
+    throw new ApiError(502, "Ether não retornou ID do usuário");
+  }
+  // `recovery: true` = a Ether achou um cadastro incompleto por e-mail e o
+  // reaproveitou (upsert) — é o sinal de que isto é uma reconciliação.
+  const recovered = etherResult.recovery === true;
+
+  try {
+    // service_role pode escrever ether_* (o usuário não: trigger + RLS).
+    await withService(async (client) => {
+      await client.query(
+        `update public.profiles
+            set ether_user_id = $2, ether_account_status = $3, tax_id = $4, phone = $5
+          where id = $1`,
+        [userId, etherUserId, toLocalStatus(etherResult.status), taxId, phone],
+      );
+    });
+  } catch (error) {
+    if (error?.code === "23505") {
+      console.error("ether_link_conflict: userId da Ether já vinculado a outro perfil", {
+        userId,
+        etherUserId,
+        recovered,
+        ...errorLogFields(error),
+      });
+      throw new ApiError(409, "Este cadastro já está vinculado a outra conta.", "ETHER_ACCOUNT_ALREADY_LINKED");
+    }
+    // Termo para ALERTA nos logs (ver SECURITY.md): conta existe na Ether, sem vínculo.
+    console.error("ETHER_ORFA: conta criada na Ether sem vínculo local — reenviar o onboarding reconcilia", {
+      userId,
+      etherUserId,
+      recovered,
+      ...errorLogFields(error),
+    });
+    throw new ApiError(
+      503,
+      "Cadastro iniciado, mas não foi possível concluí-lo agora. Tente novamente em instantes.",
+      "ETHER_LINK_PENDING",
+    );
+  }
+
+  if (recovered) {
+    console.log("ether_onboarding_recovered", { userId, etherUserId });
+  }
+
+  // Aceite de termos e declaração de PEP são exigidos antes da análise. Uma
+  // falha aqui não invalida o cadastro já criado — registramos e seguimos.
+  for (const [etapa, fn] of [
+    ["accept-terms", () => acceptTerms(etherUserId, { userAgent })],
+    ["pep-declaration", () => submitPepDeclaration(etherUserId)],
+  ]) {
+    try {
+      await fn();
+    } catch (error) {
+      console.error(`Ether recusou ${etapa}`, { userId, etherUserId, ...etherErrorFields(error) });
+    }
+  }
+
+  return {
+    etherUserId,
+    etherStatus: etherResult.status,
+    documentChecklist: etherResult.documentChecklist ?? null,
+    recovered,
   };
 }
 
@@ -497,61 +633,70 @@ authRouter.post(
 
     const payload = buildOnboardingPayload(b, titular);
 
-    let etherResult;
-    try {
-      etherResult = await createUserProfile(payload);
-    } catch (error) {
-      console.error("Ether recusou o cadastro do cliente", {
-        userId: req.userId,
-        detail: error?.body ?? String(error),
-      });
-      throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
-    }
-
-    const etherUserId = etherResult.userId ?? etherResult.id;
-    if (!etherUserId) {
-      throw new ApiError(502, "Ether não retornou ID do usuário");
-    }
-
-    // Aceite de termos e declaração de PEP são exigidos antes da análise. Uma
-    // falha aqui não invalida o cadastro já criado — registramos e seguimos,
-    // para o cliente poder reenviar sem recriar o cadastro do zero.
-    for (const [etapa, fn] of [
-      ["accept-terms", () => acceptTerms(etherUserId, { userAgent: req.headers["user-agent"] })],
-      ["pep-declaration", () => submitPepDeclaration(etherUserId)],
-    ]) {
-      try {
-        await fn();
-      } catch (error) {
-        console.error(`Ether recusou ${etapa}`, {
-          userId: req.userId,
-          etherUserId,
-          detail: error?.body ?? String(error),
-        });
-      }
-    }
-
-    // Grava o vínculo no banco (service_role pode escrever ether_*).
-    await withService(async (client) => {
-      await client.query(
-        `update public.profiles
-            set ether_user_id = $2, ether_account_status = $3, tax_id = $4, phone = $5
-          where id = $1`,
-        [req.userId, etherUserId, toLocalStatus(etherResult.status), b.taxId, b.phone],
-      );
-    });
+    const linked = await createAndLinkEtherAccount(
+      { userId: req.userId, payload, taxId: b.taxId, phone: b.phone, userAgent: req.headers["user-agent"] },
+      { createUserProfile, acceptTerms, submitPepDeclaration, withService },
+    );
 
     // `documentChecklist.pending` (ex.: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA,
     // SELFIE_COM_DOC) diz ao frontend quais documentos pedir. Antes era
     // descartado; null se a Ether não devolver.
     res.status(201).json({
-      ether_user_id: etherUserId,
-      status: etherResult.status ?? "pending_documents",
-      document_checklist: etherResult.documentChecklist ?? null,
+      ether_user_id: linked.etherUserId,
+      status: linked.etherStatus ?? "pending_documents",
+      document_checklist: linked.documentChecklist,
+      recovered: linked.recovered,
       message: "Cadastro iniciado. Envie os documentos de KYC para liberar a conta.",
     });
   }),
 );
+
+/**
+ * Monta a resposta de GET /auth/onboarding/status e reconcilia
+ * `ether_account_status` local quando a Ether reporta um valor diferente.
+ * Extraída para ser testável sem Postgres/Ether (mesmo padrão de
+ * `createAndLinkEtherAccount` e `syncLocalStatus` em onboarding-documents.js).
+ * Se a Ether estiver fora do ar, devolve o último status conhecido — nunca
+ * propaga erro ao chamador (o onboarding não pode travar por indisponibilidade
+ * de terceiro).
+ */
+export async function reconcileOnboardingStatus(userId, profile, { getAccountStatus, withService }) {
+  if (!profile?.ether_user_id) {
+    return { status: "not_started" };
+  }
+
+  try {
+    const etherStatus = await getAccountStatus(profile.ether_user_id);
+
+    // Atualiza o status local se mudou.
+    const localStatus = etherStatus?.status ? toLocalStatus(etherStatus.status) : null;
+    if (localStatus && localStatus !== profile.ether_account_status) {
+      await withService(async (client) => {
+        await client.query(
+          `update public.profiles set ether_account_status = $2 where id = $1`,
+          [userId, localStatus],
+        );
+      });
+    }
+
+    return {
+      ether_user_id: profile.ether_user_id,
+      status: etherStatus?.status ?? profile.ether_account_status,
+      pix_key: profile.ether_pix_key,
+      pix_key_type: profile.ether_pix_key_type,
+      checklist: etherStatus?.documentChecklist ?? null,
+    };
+  } catch {
+    // Se a Ether estiver fora, retorna o último status conhecido.
+    return {
+      ether_user_id: profile.ether_user_id,
+      status: profile.ether_account_status,
+      pix_key: profile.ether_pix_key,
+      pix_key_type: profile.ether_pix_key_type,
+      checklist: null,
+    };
+  }
+}
 
 /** GET /auth/onboarding/status — consulta o status da conta na Ether. */
 authRouter.get(
@@ -567,43 +712,43 @@ authRouter.get(
       return rows[0];
     });
 
-    if (!profile?.ether_user_id) {
-      return res.json({ status: "not_started" });
-    }
-
-    // Consulta o status atual na Ether.
     const { getAccountStatus } = await import("../ether.js");
-    try {
-      const etherStatus = await getAccountStatus(profile.ether_user_id);
+    const { withService } = await import("../db.js");
+    const body = await reconcileOnboardingStatus(req.userId, profile, { getAccountStatus, withService });
+    res.json(body);
+  }),
+);
 
-      // Atualiza o status local se mudou.
-      const localStatus = etherStatus?.status ? toLocalStatus(etherStatus.status) : null;
-      if (localStatus && localStatus !== profile.ether_account_status) {
-        const { withService } = await import("../db.js");
-        await withService(async (client) => {
-          await client.query(
-            `update public.profiles set ether_account_status = $2 where id = $1`,
-            [req.userId, localStatus],
-          );
-        });
-      }
-
-      return res.json({
-        ether_user_id: profile.ether_user_id,
-        status: etherStatus?.status ?? profile.ether_account_status,
-        pix_key: profile.ether_pix_key,
-        pix_key_type: profile.ether_pix_key_type,
-        checklist: etherStatus?.documentChecklist ?? null,
+/**
+ * POST /auth/onboarding/documents/:type — upload de documento de KYC (ver
+ * onboarding-documents.js). Dependências reais injetadas aqui.
+ */
+authRouter.use(
+  "/onboarding/documents",
+  createDocumentUploadRouter({
+    loadProfile: (userId) =>
+      withUser(userId, async (client) => {
+        const { rows } = await client.query(
+          `select ether_user_id, ether_account_status, ether_pix_key, ether_pix_key_type
+             from public.profiles where id = $1`,
+          [userId],
+        );
+        return rows[0] ?? null;
+      }),
+    syncLocalStatus: async (userId, etherStatus, currentLocal) => {
+      const next = toLocalStatus(etherStatus);
+      if (next === currentLocal) return;
+      const { withService } = await import("../db.js");
+      await withService(async (client) => {
+        await client.query(
+          `update public.profiles set ether_account_status = $2 where id = $1`,
+          [userId, next],
+        );
       });
-    } catch {
-      // Se a Ether estiver fora, retorna o último status conhecido.
-      return res.json({
-        ether_user_id: profile.ether_user_id,
-        status: profile.ether_account_status,
-        pix_key: profile.ether_pix_key,
-        pix_key_type: profile.ether_pix_key_type,
-        checklist: null,
-      });
-    }
+    },
+    ether: {
+      uploadDocument: async (...a) => (await import("../ether.js")).uploadDocument(...a),
+      getAccountStatus: async (...a) => (await import("../ether.js")).getAccountStatus(...a),
+    },
   }),
 );

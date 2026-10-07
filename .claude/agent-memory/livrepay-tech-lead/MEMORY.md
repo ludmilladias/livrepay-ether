@@ -1,0 +1,2 @@
+- [Bloqueio do token de sub-conta na Ether](project_ether_subconta_bloqueio.md) — por que PIX/pagamento estão em 503 e o que precisa vir da Ether antes de religar.
+- [Evidência em três níveis](feedback_evidencia_tres_niveis.md) — nunca colapsar "validado em produção" com "coberto por mock"; origem do bug do User-Agent.

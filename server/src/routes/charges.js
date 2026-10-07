@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { withUser, withService } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
-import { createPixDeposit, idempotencyKeyFrom, EtherError } from "../ether.js";
+import { createPixDeposit, idempotencyKeyFrom } from "../ether.js";
+import { etherErrorFields } from "../safeLog.js";
 
 export const chargesRouter = Router();
 chargesRouter.use(requireAuth);
@@ -137,80 +138,94 @@ chargesRouter.post(
   }),
 );
 
-chargesRouter.post(
-  "/:id/emit-disabled",
-  asyncRoute(async (req, res) => {
-    const charge = await withUser(req.userId, async (client) => {
-      const { rows } = await client.query(
-        `select id, kind, status, amount_cents, provider_charge_id
-           from public.charges where id = $1`,
-        [req.params.id],
-      );
-      return rows[0];
+/**
+ * DESLIGADO E NÃO REGISTRADO NO ROUTER (2026-10-06). Corpo preservado para
+ * quando a emissão for religada; hoje nenhum `chargesRouter.*` o referencia,
+ * logo não existe URL que o alcance (antes estava em `/:id/emit-disabled`,
+ * acessível a qualquer usuário autenticado e emitindo pela conta pool).
+ *
+ * Para religar é preciso, nesta ordem:
+ *  1. A Ether confirmar como obter um token EM NOME DA SUB-CONTA do usuário
+ *     (profiles.ether_user_id, criada no onboarding) e que o depósito PIX
+ *     emitido com esse token credita a sub-conta, não a conta pool.
+ *  2. `createPixDeposit()` passar a receber esse `subAccountToken`, resolvido
+ *     no servidor a partir do usuário autenticado (nunca vindo do cliente), e
+ *     recusar emissão se o usuário não tiver `ether_account_status` operacional.
+ *  3. Registrar a rota de volta (e remover o 503 de `/:id/emit`), com teste de
+ *     que o usuário B não emite cobrança do usuário A.
+ *  4. Revisão independente de segurança antes de qualquer deploy.
+ */
+export const emitChargeViaPoolDisabled = asyncRoute(async (req, res) => {
+  const charge = await withUser(req.userId, async (client) => {
+    const { rows } = await client.query(
+      `select id, kind, status, amount_cents, provider_charge_id
+         from public.charges where id = $1`,
+      [req.params.id],
+    );
+    return rows[0];
+  });
+
+  if (!charge) throw new ApiError(404, "Cobrança não encontrada");
+  if (charge.kind !== "pix") throw new ApiError(400, "Apenas cobranças PIX podem ser emitidas");
+  if (charge.status !== "draft" && charge.status !== "pending") {
+    throw new ApiError(409, `Cobrança com status ${charge.status} não pode ser emitida`);
+  }
+  if (charge.provider_charge_id) {
+    throw new ApiError(409, "Cobrança já emitida no provedor");
+  }
+
+  let deposit;
+  try {
+    deposit = await createPixDeposit(
+      charge.amount_cents,
+      PIX_EXPIRATION_SECONDS,
+      idempotencyKeyFrom(charge.id),
+    );
+  } catch (error) {
+    console.error("Ether recusou a emissão", {
+      chargeId: charge.id,
+      ...etherErrorFields(error),
     });
+    throw new ApiError(502, "Provedor recusou a emissão da cobrança");
+  }
 
-    if (!charge) throw new ApiError(404, "Cobrança não encontrada");
-    if (charge.kind !== "pix") throw new ApiError(400, "Apenas cobranças PIX podem ser emitidas");
-    if (charge.status !== "draft" && charge.status !== "pending") {
-      throw new ApiError(409, `Cobrança com status ${charge.status} não pode ser emitida`);
-    }
-    if (charge.provider_charge_id) {
-      throw new ApiError(409, "Cobrança já emitida no provedor");
-    }
-
-    let deposit;
-    try {
-      deposit = await createPixDeposit(
-        charge.amount_cents,
-        PIX_EXPIRATION_SECONDS,
-        idempotencyKeyFrom(charge.id),
-      );
-    } catch (error) {
-      console.error("Ether recusou a emissão", {
-        chargeId: charge.id,
-        detail: error instanceof EtherError ? error.body : String(error),
-      });
-      throw new ApiError(502, "Provedor recusou a emissão da cobrança");
-    }
-
-    // Campos do provedor são gravados com privilégio de serviço: o usuário não
-    // pode escrever provider_* por conta própria.
-    await withService(async (client) => {
-      await client.query(
-        `update public.charges
-            set status = 'pending', provider = 'ether',
-                provider_charge_id = $2, provider_status = $3,
-                txid = $4, emitted_at = now(),
-                payload = payload || jsonb_build_object(
-                  'pix_copy_paste', $5::text,
-                  'qr_code_id', $4::text,
-                  'expire_at', $6::text)
-          where id = $1`,
-        [
-          charge.id,
-          deposit.uuid,
-          deposit.status,
-          deposit.qrCodeId,
-          deposit.pixKey,
-          deposit.expireAt,
-        ],
-      );
-    }).catch((error) => {
-      // A cobrança existe na Ether mas não conseguimos gravar. Registramos
-      // para conciliação em vez de fingir falha total.
-      console.error("PIX emitido na Ether mas falhou ao gravar", {
-        chargeId: charge.id,
-        etherUuid: deposit.uuid,
-        error,
-      });
-      throw new ApiError(500, "Cobrança emitida, mas houve falha ao salvar. Contate o suporte.");
+  // Campos do provedor são gravados com privilégio de serviço: o usuário não
+  // pode escrever provider_* por conta própria.
+  await withService(async (client) => {
+    await client.query(
+      `update public.charges
+          set status = 'pending', provider = 'ether',
+              provider_charge_id = $2, provider_status = $3,
+              txid = $4, emitted_at = now(),
+              payload = payload || jsonb_build_object(
+                'pix_copy_paste', $5::text,
+                'qr_code_id', $4::text,
+                'expire_at', $6::text)
+        where id = $1`,
+      [
+        charge.id,
+        deposit.uuid,
+        deposit.status,
+        deposit.qrCodeId,
+        deposit.pixKey,
+        deposit.expireAt,
+      ],
+    );
+  }).catch((error) => {
+    // A cobrança existe na Ether mas não conseguimos gravar. Registramos
+    // para conciliação em vez de fingir falha total.
+    console.error("PIX emitido na Ether mas falhou ao gravar", {
+      chargeId: charge.id,
+      etherUuid: deposit.uuid,
+      error,
     });
+    throw new ApiError(500, "Cobrança emitida, mas houve falha ao salvar. Contate o suporte.");
+  });
 
-    res.json({
-      charge_id: charge.id,
-      pix_copy_paste: deposit.pixKey,
-      qr_code_id: deposit.qrCodeId,
-      expire_at: deposit.expireAt,
-    });
-  }),
-);
+  res.json({
+    charge_id: charge.id,
+    pix_copy_paste: deposit.pixKey,
+    qr_code_id: deposit.qrCodeId,
+    expire_at: deposit.expireAt,
+  });
+});

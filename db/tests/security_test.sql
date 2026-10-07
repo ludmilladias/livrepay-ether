@@ -889,14 +889,18 @@ end $$;
 
 set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
 do $$
-declare _rec uuid;
+declare _rec uuid; _verified public.receivables%rowtype;
 begin
-  -- verifica o primeiro recebível do Bob (compliance não é dona)
-  select id into _rec from public.receivables
+  -- verifica o primeiro recebível do Bob (compliance não é dona; desde
+  -- 20261006000000 a unica leitura ampla que compliance tem e' via
+  -- admin_receivables_list(), nao mais SELECT direto em receivables)
+  select id into _rec from public.admin_receivables_list()
    where user_id = '22222222-2222-2222-2222-222222222222' and gross_cents = 200000;
-  perform public.verify_receivable(_rec);
+  -- captura o retorno da function em vez de reler public.receivables como
+  -- Carol: desde 20261006000000 ela nao tem mais policy de staff para isso.
+  select * into _verified from public.verify_receivable(_rec);
 
-  if (select verified_at from public.receivables where id = _rec) is null then
+  if _verified.verified_at is null then
     raise exception 'T33 FALHOU: compliance nao conseguiu verificar recebivel de outro usuario';
   end if;
 
@@ -928,9 +932,9 @@ end $$;
 -- --- T34: compliance recusa recebível; recusado não pode ser antecipado ---
 set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
 do $$
-declare _rec uuid;
+declare _rec uuid; _rejected public.receivables%rowtype;
 begin
-  select id into _rec from public.receivables
+  select id into _rec from public.admin_receivables_list()
    where user_id = '22222222-2222-2222-2222-222222222222' and gross_cents = 100000;
 
   begin
@@ -940,13 +944,14 @@ begin
     if sqlerrm not like '%motivo%' then raise; end if;
   end;
 
-  perform public.reject_receivable(_rec, 'Contrato nao confere com a adquirente');
+  -- captura o retorno da function em vez de reler public.receivables como
+  -- Carol: desde 20261006000000 ela nao tem mais policy de staff para isso.
+  select * into _rejected from public.reject_receivable(_rec, 'Contrato nao confere com a adquirente');
 
-  if (select status from public.receivables where id = _rec) <> 'cancelled' then
+  if _rejected.status <> 'cancelled' then
     raise exception 'T34 FALHOU: status nao virou cancelled';
   end if;
-  if (select rejected_by from public.receivables where id = _rec)
-     <> '33333333-3333-3333-3333-333333333333' then
+  if _rejected.rejected_by <> '33333333-3333-3333-3333-333333333333' then
     raise exception 'T34 FALHOU: rejected_by nao registrado';
   end if;
 
@@ -1004,6 +1009,175 @@ begin
     raise exception 'T36 FALHOU: compliance deveria listar ao menos 4 usuarios, viu %', _n;
   end if;
   raise notice 'T36 OK: compliance lista usuarios';
+end $$;
+
+-- --- T37: service_role grava profiles.ether_* (onboarding Ether) ------------
+-- O trigger prevent_ether_field_tampering decide "serviço" pela identidade real
+-- do Postgres (current_user), a mesma que withService() assume via SET LOCAL
+-- ROLE. Antes (20260901000000) lia uma GUC que ninguem seta: o UPDATE do
+-- onboarding sempre estourava.
+reset role;
+set role service_role;
+do $$
+declare _n int;
+begin
+  update public.profiles
+     set ether_user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+         ether_account_status = 'basic'
+   where id = '11111111-1111-1111-1111-111111111111';
+  get diagnostics _n = row_count;
+  if _n <> 1 then
+    raise exception 'T37 FALHOU: service_role atualizou % linhas (esperava 1)', _n;
+  end if;
+  raise notice 'T37 OK: service_role grava campos ether_*';
+exception when raise_exception then
+  raise exception 'T37 FALHOU: service_role barrado pelo trigger: %', sqlerrm;
+end $$;
+
+-- --- T38: authenticated NAO altera ether_* (nem forjando GUC de role) -------
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+do $$
+declare _status text; _uid uuid;
+begin
+  -- 1) tentativa direta
+  begin
+    update public.profiles
+       set ether_user_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+     where id = '11111111-1111-1111-1111-111111111111';
+    raise exception 'T38 FALHOU: authenticated alterou ether_user_id!';
+  exception when raise_exception then
+    if sqlerrm not like 'Campos ether_%' then
+      raise exception 'T38 FALHOU: erro inesperado: %', sqlerrm;
+    end if;
+  end;
+
+  -- 2) forjar a GUC de role nao pode virar bypass
+  perform set_config('request.jwt.claim.role', 'service_role', true);
+  begin
+    update public.profiles
+       set ether_account_status = 'full'
+     where id = '11111111-1111-1111-1111-111111111111';
+    raise exception 'T38 FALHOU: GUC forjada virou bypass do trigger!';
+  exception when raise_exception then
+    if sqlerrm not like 'Campos ether_%' then
+      raise exception 'T38 FALHOU: erro inesperado (GUC forjada): %', sqlerrm;
+    end if;
+  end;
+
+  -- 3) nada mudou alem do que o service_role gravou em T37
+  select ether_user_id, ether_account_status into _uid, _status
+    from public.profiles where id = '11111111-1111-1111-1111-111111111111';
+  if _uid <> 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' or _status <> 'basic' then
+    raise exception 'T38 FALHOU: estado inesperado (%, %)', _uid, _status;
+  end if;
+  raise notice 'T38 OK: authenticated nao altera ether_* (GUC forjada ignorada)';
+end $$;
+
+-- --- T39: policy de staff em transactions NÃO existe mais (fix 20260906010000) ---
+-- Reproduz exatamente o que /reports/statement e /reports/financials fazem:
+-- SELECT em public.transactions sob a sessão RLS do usuário logado, sem
+-- filtro explícito de account_id (a tabela nem tem user_id direto — o
+-- isolamento é 100% via RLS). Carol é compliance e nunca teve conta própria
+-- movimentada; se a policy "transactions: staff le todas" ainda existisse,
+-- ela veria o ledger de Alice/Bob (dezenas de linhas). Depois do fix deve
+-- ver zero.
+set role authenticated;
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.transactions;
+  if _n <> 0 then
+    raise exception 'T39 FALHOU: compliance leu % linhas do ledger de outros usuarios via RLS direta', _n;
+  end if;
+  raise notice 'T39 OK: compliance nao le transactions de outros usuarios via RLS direta (sem policy de staff)';
+end $$;
+
+-- admin_transactions_volume() continua funcionando para staff (é a única via
+-- de acesso agregado que resta, SECURITY DEFINER com guard de role interno).
+do $$
+declare _total bigint;
+begin
+  select coalesce(sum(in_cents), 0) into _total from public.admin_transactions_volume();
+  if _total <= 0 then
+    raise exception 'T39 FALHOU: admin_transactions_volume() nao agregou nenhum credito (esperava > 0)';
+  end if;
+  raise notice 'T39 OK: admin_transactions_volume() segue agregando volume para compliance (% centavos em creditos)', _total;
+end $$;
+
+-- support (sem admin/compliance) nao pode nem chamar a function agregada.
+set request.jwt.claim.sub = '44444444-4444-4444-4444-444444444444'; -- Dave (support)
+do $$
+begin
+  begin
+    perform public.admin_transactions_volume();
+    raise exception 'T39 FALHOU: support chamou admin_transactions_volume()!';
+  exception when others then
+    if sqlerrm not like '%Apenas admin%' then raise; end if;
+  end;
+  raise notice 'T39 OK: admin_transactions_volume() nega quem nao e admin/compliance';
+end $$;
+
+-- --- T40: policy de staff em receivables NÃO existe mais (fix 20261006000000) ---
+-- Reproduz exatamente o que GET /receivables e GET /receivables/summary fazem:
+-- SELECT em public.receivables sob a sessão RLS do usuário logado, sem
+-- filtro explícito de user_id. Carol é compliance e não tem recebível
+-- próprio; se a policy "receivables: staff le todos" ainda existisse, ela
+-- veria os recebíveis de Alice/Bob criados em T30/T31/T33/T34 (várias
+-- linhas). Depois do fix deve ver zero.
+set role authenticated;
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.receivables;
+  if _n <> 0 then
+    raise exception 'T40 FALHOU: compliance leu % linhas de recebiveis de outros usuarios via RLS direta', _n;
+  end if;
+  raise notice 'T40 OK: compliance nao le receivables de outros usuarios via RLS direta (sem policy de staff)';
+end $$;
+
+-- admin_receivables_list() continua funcionando para staff (é a única via de
+-- acesso agregado que resta, SECURITY DEFINER com guard de role interno). Os
+-- recebíveis criados em T30/T31/T33/T34 já saíram todos de scheduled/overdue
+-- (advanced ou cancelled) — cria um novo pendente para provar que a function
+-- agrega staff de verdade, não só retorna vazio por acidente.
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111'; -- Alice
+do $$
+declare _contract uuid;
+begin
+  insert into public.receivable_contracts (user_id, name, acquirer)
+  values ('11111111-1111-1111-1111-111111111111', 'Contrato T40', 'Adquirente T40')
+  returning id into _contract;
+
+  insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+  values ('11111111-1111-1111-1111-111111111111', _contract, 300000, 290000, current_date + 7);
+end $$;
+
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance)
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.admin_receivables_list();
+  if _n <= 0 then
+    raise exception 'T40 FALHOU: admin_receivables_list() nao retornou nenhum recebivel pendente (esperava > 0)';
+  end if;
+  raise notice 'T40 OK: admin_receivables_list() segue agregando recebiveis pendentes para compliance (% linhas)', _n;
+end $$;
+
+-- support (sem admin/compliance) nao pode nem chamar a function agregada.
+set request.jwt.claim.sub = '44444444-4444-4444-4444-444444444444'; -- Dave (support)
+do $$
+begin
+  begin
+    perform public.admin_receivables_list();
+    raise exception 'T40 FALHOU: support chamou admin_receivables_list()!';
+  exception when others then
+    if sqlerrm not like '%Apenas admin%' then raise; end if;
+  end;
+  raise notice 'T40 OK: admin_receivables_list() nega quem nao e admin/compliance';
 end $$;
 
 -- --- Resumo ---------------------------------------------------------------

@@ -3,8 +3,12 @@ import { Router } from "express";
 import { config } from "../config.js";
 import { withService } from "../db.js";
 import { asyncRoute } from "../middleware.js";
+import { errorLogFields } from "../safeLog.js";
 
 export const webhookRouter = Router();
+
+const MAX_AGE_SECONDS = 300;
+const MAX_FUTURE_SKEW_SECONDS = 60;
 
 /** Comparação em tempo constante — evita descobrir o segredo por timing. */
 function safeEqual(a, b) {
@@ -139,8 +143,9 @@ export async function runProviderEvent(storedId, { eventType, payload, eventId }
  *
  * Validação HMAC-SHA256:
  *  - Header: X-Signature no formato "t=<timestamp>,v1=<hex_digest>"
- *  - Assinatura: HMAC-SHA256(secret, "<timestamp>.<rawBody>")
- *  - Replay: timestamps com mais de 5 minutos são rejeitados.
+ *  - Assinatura: HMAC-SHA256(secret, "<timestamp>.<rawBody>"), rawBody = bytes
+ *    recebidos (req.rawBody), nunca o JSON re-serializado.
+ *  - Replay: timestamps com mais de 5 minutos (ou mais de 60s no futuro) são rejeitados.
  *  - Comparação em tempo constante para evitar timing attacks.
  *
  * Garantias:
@@ -169,16 +174,28 @@ function validateSignature(req) {
       return { status: 401, body: { error: "assinatura malformada" } };
     }
 
-    // Replay protection: rejeita eventos com mais de 5 minutos.
-    const age = Math.abs(Date.now() / 1000 - Number(timestamp));
-    if (age > 300) {
+    // Replay protection: rejeita eventos com mais de 5 minutos no passado. No
+    // futuro só toleramos um pequeno desvio de relógio (antes, Math.abs aceitava
+    // evento datado até 5 minutos adiante).
+    const ts = Number(timestamp);
+    if (!Number.isFinite(ts)) {
+      return { status: 401, body: { error: "assinatura malformada" } };
+    }
+    const age = Date.now() / 1000 - ts;
+    if (age > MAX_AGE_SECONDS || age < -MAX_FUTURE_SKEW_SECONDS) {
       return { status: 401, body: { error: "assinatura expirada" } };
     }
 
-    const rawBody = JSON.stringify(req.body);
+    // HMAC sobre os BYTES recebidos (capturados em express.json({ verify })), não
+    // sobre JSON.stringify(req.body). Sem o buffer cru, falha fechado.
+    const raw = req.rawBody;
+    if (!Buffer.isBuffer(raw)) {
+      return { status: 401, body: { error: "assinatura inválida" } };
+    }
     const expected = crypto
       .createHmac("sha256", config.ether.webhookSecret)
-      .update(`${timestamp}.${rawBody}`)
+      .update(`${timestamp}.`)
+      .update(raw)
       .digest("hex");
 
     if (!safeEqual(signature, expected)) {
@@ -221,7 +238,8 @@ async function handleEtherWebhook(req, res) {
       // Já recebemos: responder 200 para o provedor parar de reenviar.
       return res.json({ status: "duplicate_ignored" });
     }
-    console.error("Falha ao registrar evento do provedor", error);
+    // Não loga o erro cru: o `detail` do Postgres pode carregar o payload do evento.
+    console.error("Falha ao registrar evento do provedor", errorLogFields(error));
     return res.status(500).json({ error: "storage failure" });
   }
 

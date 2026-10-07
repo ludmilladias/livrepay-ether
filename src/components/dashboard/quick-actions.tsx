@@ -4,7 +4,6 @@ import {
   Zap,
   PiggyBank,
   Send,
-  Shield,
 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -46,13 +45,8 @@ const quickActions = [
     color: "bg-gradient-dark",
     to: "/pagamentos/transferencias",
   },
-  {
-    title: "Cotar Seguro",
-    description: "Proteção para seu negócio",
-    icon: Shield,
-    color: "bg-warning",
-    to: "/seguros/cotacoes",
-  },
+  // "Cotar Seguro" (/seguros/cotacoes) saiu junto com o módulo de Seguros, que
+  // está fora da navegação até definirem o modelo de cotação (ver App.tsx).
 ]
 
 export function QuickActions() {

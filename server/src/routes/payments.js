@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { withUser, withService } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
+import { etherErrorFields } from "../safeLog.js";
 import {
   withdrawPixToKey,
   inferPixKeyType,
@@ -144,8 +145,7 @@ paymentsRouter.get(
       const status = await getBoletoStatus(payment.provider_payment_id);
       res.json(status);
     } catch (error) {
-      const detail = error instanceof EtherError ? error.body : String(error);
-      console.error("Falha ao consultar status do boleto", { paymentId: req.params.id, detail });
+      console.error("Falha ao consultar status do boleto", { paymentId: req.params.id, ...etherErrorFields(error) });
       throw new ApiError(502, "Não foi possível consultar o status no provedor");
     }
   }),
@@ -164,6 +164,23 @@ paymentsRouter.get(
  * por trás — mesma lógica, mesmo caminho de estorno, seja quem chamar.
  */
 export async function executePaymentForUser(userId, paymentId) {
+  // Propriedade ANTES do 503 (2026-10-06). Desligar a execução não pode
+  // desligar a prova de isolamento: id de outro dono e id inexistente têm de
+  // responder IGUAL (404) — 503 para ambos esconderia um furo de RLS, e
+  // respostas diferentes vazariam existência. A checagem é a RLS de
+  // public.payments ("usuário lê os próprios"), não um `if` sobre user_id.
+  // UUID malformado vira 404 também (senão o Postgres responderia 22P02 -> 500).
+  const idOk =
+    typeof paymentId === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(paymentId);
+  const visible = idOk
+    ? await withUser(userId, async (client) => {
+        const { rows } = await client.query(`select id from public.payments where id = $1`, [paymentId]);
+        return rows[0];
+      })
+    : null;
+  if (!visible) throw new ApiError(404, "Pagamento não encontrado");
+
   // Desligado deliberadamente (2026-10-02): mesma razão do emit de cobrança
   // em charges.js — `withdrawPixToKey()`/`payBoleto()` só têm o token do
   // participante (conta pool da LivrePay), e a Ether exige conta individual
@@ -214,7 +231,7 @@ export async function executePaymentForUserDisabled(userId, paymentId) {
     } catch (error) {
       console.error("Falha ao simular boleto antes do pagamento", {
         paymentId,
-        detail: error instanceof EtherError ? error.body : String(error),
+        ...etherErrorFields(error),
       });
       throw new ApiError(502, "Não foi possível confirmar o valor do boleto no provedor");
     }
@@ -317,7 +334,7 @@ export async function executePaymentForUserDisabled(userId, paymentId) {
     console.error("Provedor recusou o pagamento — estornando", {
       paymentId,
       method,
-      detail: error instanceof EtherError ? error.body : String(error),
+      ...etherErrorFields(error),
     });
 
     try {

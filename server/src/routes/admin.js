@@ -42,27 +42,18 @@ adminRouter.get(
 // --- Volume (gráfico do dashboard admin) -------------------------------------
 //
 // Agrega public.transactions de TODOS os usuários por dia, últimos 30 dias.
-// Só existe dado aqui porque a migration 20260821010000 deu ao staff uma
-// policy adicional de leitura ampla em transactions (nunca escrita — isso
-// continua só pela RPC process_transaction()).
+// Até 2026-10-06 isto era uma query direta que dependia de uma policy RLS de
+// staff em `transactions` — essa policy vazava o MESMO acesso amplo para as
+// rotas pessoais /reports/statement e /reports/financials (RLS vale por
+// sessão/role, não por rota). Corrigido (20260906010000): a policy foi
+// removida e a agregação agora só existe via admin_transactions_volume(),
+// SECURITY DEFINER que checa role internamente — não reintroduza a query
+// direta nem a policy sem reler aquela migration.
 adminRouter.get(
   "/reports/volume",
   asyncRoute(async (req, res) => {
     const rows = await withUser(req.userId, async (client) => {
-      const result = await client.query(
-        `select day::date as day,
-                coalesce(sum(amount_cents) filter (where type = 'credit'), 0)::bigint as in_cents,
-                coalesce(sum(amount_cents) filter (where type = 'debit'), 0)::bigint as out_cents
-           from generate_series(
-                  date_trunc('day', now()) - interval '29 days',
-                  date_trunc('day', now()),
-                  interval '1 day'
-                ) as day
-           left join public.transactions t
-             on date_trunc('day', t.created_at) = day
-          group by day
-          order by day`,
-      );
+      const result = await client.query(`select * from public.admin_transactions_volume()`);
       return result.rows;
     });
     res.json(rows);
@@ -70,21 +61,20 @@ adminRouter.get(
 );
 
 // --- Verificação de recebíveis -----------------------------------------------
-
+//
+// Lista recebíveis pendentes de TODOS os usuários. Até 2026-10-06 isto era
+// uma query direta que dependia de uma policy RLS de staff em `receivables`
+// — essa policy vazava o MESMO acesso amplo para as rotas pessoais
+// GET /receivables e GET /receivables/summary (RLS vale por sessão/role, não
+// por rota). Corrigido (20261006000000): a policy foi removida e a listagem
+// agora só existe via admin_receivables_list(), SECURITY DEFINER que checa
+// role internamente — não reintroduza a query direta nem a policy sem reler
+// aquela migration (mesmo padrão de /admin/reports/volume acima).
 adminRouter.get(
   "/receivables",
   asyncRoute(async (req, res) => {
     const rows = await withUser(req.userId, async (client) => {
-      const result = await client.query(
-        `select r.*, c.name as contract_name, c.acquirer as contract_acquirer,
-                p.full_name as owner_name
-           from public.receivables r
-           left join public.receivable_contracts c on c.id = r.contract_id
-           left join public.profiles p on p.id = r.user_id
-          where r.status in ('scheduled', 'overdue')
-          order by r.verified_at is not null, r.due_date asc
-          limit 200`,
-      );
+      const result = await client.query(`select * from public.admin_receivables_list()`);
       return result.rows;
     });
     res.json(rows);

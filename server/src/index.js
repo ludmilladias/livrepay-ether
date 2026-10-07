@@ -5,7 +5,7 @@ import rateLimit from "express-rate-limit";
 import { config } from "./config.js";
 import { pool } from "./db.js";
 import { sharedRateLimitStore } from "./rateLimitStore.js";
-import { errorHandler } from "./middleware.js";
+import { errorHandler, captureRawBody } from "./middleware.js";
 import { authRouter } from "./routes/auth.js";
 import { chargesRouter } from "./routes/charges.js";
 import { paymentsRouter } from "./routes/payments.js";
@@ -34,7 +34,7 @@ app.use(
 );
 
 // Limite de corpo: bloqueia payload gigante como vetor de DoS.
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "100kb", verify: captureRawBody }));
 
 // Teto global por IP; as rotas de login têm limite próprio, mais rígido.
 app.use(

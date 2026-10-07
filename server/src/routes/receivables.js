@@ -71,7 +71,13 @@ receivableContractsRouter.post(
 );
 
 // --- Recebíveis agendados ----------------------------------------------------
-
+//
+// RLS "receivables: usuário lê os próprios" já garante que só vem o que é do
+// usuário logado — nenhum filtro por user_id é necessário aqui. Desde
+// 20261006000000_fix_receivables_staff_leak.sql essa é a ÚNICA policy de
+// select em receivables (a policy ampla de staff foi removida porque vazava
+// para estas duas rotas pessoais); não reintroduza um "or has_role(...)" aqui
+// nem uma policy de staff sem reler aquela migration.
 receivablesRouter.get(
   "/",
   asyncRoute(async (req, res) => {
