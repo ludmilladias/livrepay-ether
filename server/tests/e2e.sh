@@ -303,13 +303,19 @@ grep -q '"description":"Antecipação de recebível"' <<<"$(split_body "$R")" \
   && ok "extrato mostra o crédito da antecipação" \
   || bad "extrato não mostra o crédito da antecipação"
 
-# Bob agora é admin: a policy "transactions: staff le todas"
-# (20260821010000_reports_staff_read.sql) permite leitura ampla de propósito,
-# para os gráficos do painel. Travamos esse comportamento aqui.
+# Bob agora é admin, mas GET /transactions é rota PESSOAL (só requireAuth,
+# sem filtro de conta na query — RLS "usuário lê as próprias" é o único
+# isolamento). Até 2026-10-06 a policy "transactions: staff le todas"
+# (20260821010000) vazava aqui e também em /reports/statement e
+# /reports/financials para qualquer admin/compliance — corrigido em
+# 20260906010000 (policy removida; volume agregado de staff agora só via
+# admin_transactions_volume(), chamada por GET /admin/reports/volume).
+# NÃO reverta esta asserção achando "admin devia ver tudo": a visão agregada
+# de staff tem rota própria e isolada, testada mais abaixo.
 R=$(req GET /transactions "$BOB_TOKEN" "")
 grep -q '"description":"Antecipação de recebível"' <<<"$(split_body "$R")" \
-  && ok "admin enxerga lançamentos de todos (staff read, intencional)" \
-  || bad "admin deveria enxergar todos os lançamentos (staff read)"
+  && bad "admin NÃO deveria ver lançamento de outro usuário em /transactions (rota pessoal)" \
+  || ok "admin não enxerga lançamentos de outros usuários em /transactions (rota pessoal isolada)"
 
 echo "== Relatórios (/reports/*) e volume admin =="
 # Soma todos os valores numéricos de um campo num JSON (sem jq). Os campos de

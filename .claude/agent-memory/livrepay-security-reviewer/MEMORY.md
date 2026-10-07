@@ -1,0 +1,1 @@
+- [Revisão de segurança do onboarding Ether (2026-10-06)](project_revisao_seguranca_onboarding.md) — achados estruturais e pendências de rotação de credencial.

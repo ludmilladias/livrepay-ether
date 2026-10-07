@@ -651,6 +651,53 @@ authRouter.post(
   }),
 );
 
+/**
+ * Monta a resposta de GET /auth/onboarding/status e reconcilia
+ * `ether_account_status` local quando a Ether reporta um valor diferente.
+ * Extraída para ser testável sem Postgres/Ether (mesmo padrão de
+ * `createAndLinkEtherAccount` e `syncLocalStatus` em onboarding-documents.js).
+ * Se a Ether estiver fora do ar, devolve o último status conhecido — nunca
+ * propaga erro ao chamador (o onboarding não pode travar por indisponibilidade
+ * de terceiro).
+ */
+export async function reconcileOnboardingStatus(userId, profile, { getAccountStatus, withService }) {
+  if (!profile?.ether_user_id) {
+    return { status: "not_started" };
+  }
+
+  try {
+    const etherStatus = await getAccountStatus(profile.ether_user_id);
+
+    // Atualiza o status local se mudou.
+    const localStatus = etherStatus?.status ? toLocalStatus(etherStatus.status) : null;
+    if (localStatus && localStatus !== profile.ether_account_status) {
+      await withService(async (client) => {
+        await client.query(
+          `update public.profiles set ether_account_status = $2 where id = $1`,
+          [userId, localStatus],
+        );
+      });
+    }
+
+    return {
+      ether_user_id: profile.ether_user_id,
+      status: etherStatus?.status ?? profile.ether_account_status,
+      pix_key: profile.ether_pix_key,
+      pix_key_type: profile.ether_pix_key_type,
+      checklist: etherStatus?.documentChecklist ?? null,
+    };
+  } catch {
+    // Se a Ether estiver fora, retorna o último status conhecido.
+    return {
+      ether_user_id: profile.ether_user_id,
+      status: profile.ether_account_status,
+      pix_key: profile.ether_pix_key,
+      pix_key_type: profile.ether_pix_key_type,
+      checklist: null,
+    };
+  }
+}
+
 /** GET /auth/onboarding/status — consulta o status da conta na Ether. */
 authRouter.get(
   "/onboarding/status",
@@ -665,44 +712,10 @@ authRouter.get(
       return rows[0];
     });
 
-    if (!profile?.ether_user_id) {
-      return res.json({ status: "not_started" });
-    }
-
-    // Consulta o status atual na Ether.
     const { getAccountStatus } = await import("../ether.js");
-    try {
-      const etherStatus = await getAccountStatus(profile.ether_user_id);
-
-      // Atualiza o status local se mudou.
-      const localStatus = etherStatus?.status ? toLocalStatus(etherStatus.status) : null;
-      if (localStatus && localStatus !== profile.ether_account_status) {
-        const { withService } = await import("../db.js");
-        await withService(async (client) => {
-          await client.query(
-            `update public.profiles set ether_account_status = $2 where id = $1`,
-            [req.userId, localStatus],
-          );
-        });
-      }
-
-      return res.json({
-        ether_user_id: profile.ether_user_id,
-        status: etherStatus?.status ?? profile.ether_account_status,
-        pix_key: profile.ether_pix_key,
-        pix_key_type: profile.ether_pix_key_type,
-        checklist: etherStatus?.documentChecklist ?? null,
-      });
-    } catch {
-      // Se a Ether estiver fora, retorna o último status conhecido.
-      return res.json({
-        ether_user_id: profile.ether_user_id,
-        status: profile.ether_account_status,
-        pix_key: profile.ether_pix_key,
-        pix_key_type: profile.ether_pix_key_type,
-        checklist: null,
-      });
-    }
+    const { withService } = await import("../db.js");
+    const body = await reconcileOnboardingStatus(req.userId, profile, { getAccountStatus, withService });
+    res.json(body);
   }),
 );
 

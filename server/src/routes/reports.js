@@ -55,6 +55,12 @@ reportsRouter.get(
 //
 // Extrato de verdade a partir do ledger imutável — sem tabela de "extratos
 // gerados" nem contador fictício: o próprio período consultado É o extrato.
+// Isolamento por conta vem só da RLS "transactions: usuário lê as próprias"
+// (20260811120000) — até 2026-10-06 existia também uma policy de staff que
+// vazava o ledger de todos os usuários pra quem tinha role admin/compliance
+// (removida em 20260906010000). Não adicione aqui nenhum filtro por role
+// pensando em "liberar mais" para staff: a visão agregada de staff tem rota
+// própria e isolada (GET /admin/reports/volume).
 reportsRouter.get(
   "/statement",
   asyncRoute(async (req, res) => {
@@ -165,6 +171,9 @@ reportsRouter.get(
 );
 
 // --- Financeiro (Relatórios > Financeiro) --------------------------------------
+//
+// Mesma base de isolamento do /statement acima: só a RLS "usuário lê as
+// próprias" em transactions, nenhuma policy de staff (ver 20260906010000).
 reportsRouter.get(
   "/financials",
   asyncRoute(async (req, res) => {

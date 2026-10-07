@@ -12,13 +12,57 @@
 > **2026-09-17**: o bloqueio de credencial da Ether (seção 1, "Testado contra a Ether de
 > produção...") **foi resolvido** — a Ether entregou um par de credenciais de integração
 > válido. Detalhe e evidência na entrada "2026-09-17 — DESBLOQUEADO" dentro da seção 1.
+>
+> **2026-10-06 — vazamento de ledger pessoal para staff via RLS, corrigido**: a policy
+> `"transactions: staff le todas"` (`20260821010000_reports_staff_read.sql`), criada só para o
+> gráfico agregado de `/admin/reports/volume`, valia por SESSÃO/ROLE, não por rota — qualquer
+> admin/compliance que chamasse as rotas PESSOAIS `GET /reports/statement`,
+> `GET /reports/financials` e `GET /transactions` (`server/src/routes/reports.js` e `core.js`,
+> gate só `requireAuth`, sem filtro de conta na query) lia o ledger de TODOS os usuários, não só
+> o seu (`accounts`/saldo continuava isolado — sem policy de staff nessa tabela). Achado nesta
+> sessão, nunca explorado em produção (sem evidência de uso indevido). A correção (causa raiz,
+> migration `20260906010000_fix_transactions_staff_leak.sql`) já existia no working tree antes
+> desta sessão: derruba a policy ampla e move a agregação de staff para
+> `admin_transactions_volume()` (`SECURITY DEFINER`, guard de role interno), chamada só por
+> `GET /admin/reports/volume`. Nesta sessão: adicionado teste de regressão **T39** (prova que
+> compliance não lê `transactions` de outro usuário via RLS direta e que a function agregada
+> continua funcionando só para staff) e corrigida uma asserção desatualizada em
+> `server/tests/e2e.sh` que ainda exigia o comportamento vulnerável antigo em `GET /transactions`.
+> `npm run db:test` (39 blocos), `test:ether`, `test:onboarding-link` e `bash server/tests/e2e.sh`
+> (103 OK, 0 falha, 4 puladas por padrão) rodados limpos após o fix.
+>
+> **2026-10-06 — segundo achado, mesmo padrão: vazamento de recebíveis pessoais para staff via
+> RLS, corrigido**: a policy `"receivables: staff le todos"` (`20260821000000_admin_panel.sql`),
+> criada só para o painel admin listar recebíveis pendentes de verificação
+> (`GET /admin/receivables`), valia por SESSÃO/ROLE, não por rota — qualquer admin/compliance que
+> chamasse as rotas PESSOAIS `GET /receivables` e `GET /receivables/summary`
+> (`server/src/routes/receivables.js`, gate só `requireAuth`, sem filtro de `user_id` na query,
+> porque a RLS "usuário lê os próprios" bastava até aqui) lia `gross_cents`/`net_cents`/
+> `due_date`/`status` de recebíveis de TODOS os usuários, não só o seu. Achado por revisor
+> independente (read-only) nesta sessão, nunca explorado em produção (sem evidência de uso
+> indevido). Correção (causa raiz, migration `20261006000000_fix_receivables_staff_leak.sql`,
+> mesmo padrão de `20260906010000_fix_transactions_staff_leak.sql`): derruba a policy ampla e move
+> a listagem agregada de `/admin/receivables` para `admin_receivables_list()` (`SECURITY
+> DEFINER`, guard de role interno), chamada só por essa rota (`server/src/routes/admin.js`); as
+> rotas pessoais (`server/src/routes/receivables.js`) não ganharam filtro de `user_id` — voltam a
+> ficar isoladas só pela RLS, de propósito, igual já documentado em `reports.js` para o caso de
+> `transactions`. Teste de regressão **T40** adicionado (compliance não lê `receivables` de outro
+> usuário via RLS direta; `admin_receivables_list()` segue agregando para staff e nega para
+> `support`); isso também exigiu ajustar T33/T34 (compliance passou a localizar/validar o
+> recebível de Bob via `admin_receivables_list()`/retorno da function, não mais via `SELECT`
+> direto em `receivables`, já que a policy ampla que isso dependia foi removida).
+> `db/tests/run-tests.sh` (40 blocos), `test:ether` (29 OK), `test:onboarding-link` (33 OK) e
+> `bash server/tests/e2e.sh` (103 OK, 0 falha, 4 puladas por padrão) rodados limpos após o fix.
+
+Leia [SECURITY.md](SECURITY.md) antes de tocar em qualquer coisa que envolva dinheiro,
+autenticação ou a integração com a Ether.
 
 ## Como retomar uma sessão
 
 ```bash
 docker compose up -d --build   # .env já existe e está preenchido com credencial Ether válida
-npm run db:test              # 38 blocos numerados (T1-T38; 43 mensagens OK) no banco
-bash server/tests/e2e.sh     # 54 asserções na API (50 executadas + 4 puladas) — por padrão NÃO executa pagamento real
+npm run db:test              # 39 blocos numerados (T1-T39) no banco
+bash server/tests/e2e.sh     # 107 asserções na API (103 executadas + 4 puladas) — por padrão NÃO executa pagamento real
                                # (ver ETHER_ALLOW_REAL_PAYMENTS na seção 1, "2026-09-17")
 cd server && npm run test:ether && cd ..  # retry/timeout do cliente Ether contra mock
 cd server && npm run test:onboarding && npm run test:documents \
