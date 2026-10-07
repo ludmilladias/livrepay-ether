@@ -159,6 +159,27 @@ check "$(split_body "$R")" "[]" "bob NÃO vê pagamento da alice (RLS)"
 
 R=$(req POST "/payments/$PAY_ID/execute" "$BOB_TOKEN" "")
 check "$(split_status "$R")" "404" "bob NÃO executa pagamento da alice"
+BOB_ON_ALICE_BODY=$(split_body "$R")
+
+# Execução está DESLIGADA (503, ver executePaymentForUser) — mas a propriedade é
+# checada ANTES do 503, então o isolamento continua provado por esta rota.
+# Id inexistente e id de outro dono têm de ser INDISTINGUÍVEIS (mesmo status e
+# mesmo corpo): qualquer diferença vazaria a existência do pagamento.
+R=$(req POST "/payments/00000000-0000-4000-8000-000000000000/execute" "$BOB_TOKEN" "")
+check "$(split_status "$R")" "404" "id inexistente também dá 404"
+check "$(split_body "$R")" "$BOB_ON_ALICE_BODY" "404 de id inexistente e de outro dono são idênticos (sem vazar existência)"
+
+R=$(req POST "/payments/nao-e-uuid/execute" "$BOB_TOKEN" "")
+check "$(split_status "$R")" "404" "id malformado dá 404, não 500"
+
+# Dono do pagamento: passa pela checagem de propriedade e cai no 503. Seguro por
+# construção — o 503 sai antes de qualquer débito ou chamada à Ether. Quando a
+# execução for religada, o esperado aqui vira 422 (saldo 0), como na seção
+# gated por ETHER_ALLOW_REAL_PAYMENTS acima.
+R=$(req POST "/payments/$PAY_ID/execute" "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "503" "dono executa o próprio pagamento: 503 (execução desligada)"
+R=$(req GET /accounts/balance "$ALICE_TOKEN" "")
+check "$(num "$(split_body "$R")" balance_cents)" "0" "saldo intacto após o 503"
 
 echo "== Pagamentos: Boleto (Contas e Tributos) =="
 VALID_LINE="34191790010104351004791020150008589370000002000"
@@ -289,6 +310,125 @@ R=$(req GET /transactions "$BOB_TOKEN" "")
 grep -q '"description":"Antecipação de recebível"' <<<"$(split_body "$R")" \
   && ok "admin enxerga lançamentos de todos (staff read, intencional)" \
   || bad "admin deveria enxergar todos os lançamentos (staff read)"
+
+echo "== Relatórios (/reports/*) e volume admin =="
+# Soma todos os valores numéricos de um campo num JSON (sem jq). Os campos de
+# dinheiro chegam como número (o driver converte bigint) e nunca negativos.
+sumf()  { grep -o "\"$2\":[0-9]*" <<<"$1" | sed 's/.*://' | awk '{s+=$1} END {print s+0}'; }
+countf(){ grep -o "\"$2\":" <<<"$1" | wc -l | tr -d ' '; }
+
+# Carol: usuária comum e SEM movimentação — prova de que não enxerga a alice.
+CAROL="carol-$STAMP@livrepay.test"
+R=$(req POST /auth/register "" "{\"email\":\"$CAROL\",\"password\":\"SenhaForte123!\",\"fullName\":\"Carol\"}")
+CAROL_TOKEN=$(field "$(split_body "$R")" access_token)
+[ -n "$CAROL_TOKEN" ] && ok "carol (usuária comum, sem movimento) registrada" || bad "carol não registrada"
+
+# Movimento conhecido da alice, pelos MESMOS caminhos de produção (funções de
+# serviço — a API não tem rota que credite/debite): a cobrança de 350000 é
+# liquidada (provider_confirm_charge) e uma tarifa de 20000 é debitada
+# (provider_settle). Com o crédito da antecipação (97000) o ledger da alice fica:
+#   +97000 (antecipação)  +350000 (cobrança paga)  -20000 (tarifa)
+# => entradas 447000, saídas 20000, saldo final 427000, 3 lançamentos.
+# Nenhuma chamada à Ether: é SQL direto no banco do compose.
+docker exec livrepay-novo-db psql -U postgres -d livrepay -q -c \
+  "select public.provider_confirm_charge('$CHARGE_ID', 350000, 'PAID');
+   select public.provider_settle((select id from auth.users where email = '$ALICE'),
+          'debit', 20000, 'Tarifa e2e', null, null);" >/dev/null 2>&1 \
+  && ok "movimento conhecido lançado para a alice (+350000 cobrança, -20000 tarifa)" \
+  || bad "não consegui lançar o movimento de teste da alice"
+
+R=$(req GET /accounts/balance "$ALICE_TOKEN" "")
+check "$(num "$(split_body "$R")" balance_cents)" "427000" "saldo da alice = 97000 + 350000 - 20000"
+
+# Sem token nenhuma rota de relatório responde.
+for P in cashflow statement reconciliation financials; do
+  R=$(req GET "/reports/$P" "" "")
+  check "$(split_status "$R")" "401" "/reports/$P exige autenticação"
+done
+
+# --- cashflow
+R=$(req GET /reports/cashflow "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "200" "alice lê o próprio cashflow"
+B=$(split_body "$R")
+check "$(countf "$B" day)" "30" "cashflow cobre 30 dias"
+check "$(sumf "$B" in_cents)" "447000" "cashflow: entradas batem com o ledger (447000)"
+check "$(sumf "$B" out_cents)" "20000" "cashflow: saídas batem com o ledger (20000)"
+
+# --- statement
+R=$(req GET /reports/statement "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "200" "alice lê o próprio extrato"
+B=$(split_body "$R")
+check "$(num "$B" opening_balance_cents)" "0" "extrato: saldo inicial = 0"
+check "$(num "$B" closing_balance_cents)" "427000" "extrato: saldo final = saldo da conta"
+check "$(num "$B" total_in_cents)" "447000" "extrato: total de entradas"
+check "$(num "$B" total_out_cents)" "20000" "extrato: total de saídas"
+check "$(num "$B" transaction_count)" "3" "extrato: 3 lançamentos"
+grep -q '"description":"Tarifa e2e"' <<<"$B" && ok "extrato lista a tarifa lançada" || bad "extrato não lista a tarifa"
+
+TOMORROW=$(date -u -d "+1 day" +%Y-%m-%d 2>/dev/null || date -u -v+1d +%Y-%m-%d)
+R=$(req GET "/reports/statement?from=$TOMORROW&to=$TOMORROW" "$ALICE_TOKEN" "")
+B=$(split_body "$R")
+check "$(num "$B" transaction_count)" "0" "extrato de período sem movimento: 0 lançamentos"
+check "$(num "$B" opening_balance_cents)" "427000" "extrato vazio: saldo inicial = saldo atual"
+check "$(num "$B" closing_balance_cents)" "427000" "extrato vazio: saldo final = saldo atual"
+
+R=$(req GET "/reports/statement?from=2026-13-45&to=2026-13-46" "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "400" "extrato com data impossível (mês 13) é recusado, não vira 500"
+R=$(req GET "/reports/statement?from=ontem" "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "400" "extrato com data fora do formato é recusado"
+R=$(req GET "/reports/statement?from=$TOMORROW&to=2000-01-01" "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "400" "extrato com from depois de to é recusado"
+
+# --- reconciliation: a cobrança paga tem exatamente um lançamento no ledger
+R=$(req GET /reports/reconciliation "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "200" "alice lê a própria conciliação"
+B=$(split_body "$R")
+check "$(num "$B" total)" "1" "conciliação: 1 item liquidado (a cobrança paga)"
+check "$(num "$B" reconciled_count)" "1" "conciliação: o item tem lançamento no ledger"
+check "$(num "$B" divergent_count)" "0" "conciliação: nenhuma divergência"
+
+# --- financials
+R=$(req GET /reports/financials "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "200" "alice lê o próprio financeiro"
+B=$(split_body "$R")
+check "$(num "$B" balance_cents)" "427000" "financeiro: saldo"
+check "$(num "$B" revenue_cents)" "447000" "financeiro: receita 30d (créditos do ledger)"
+check "$(num "$B" expense_cents)" "20000" "financeiro: despesa 30d (débitos do ledger)"
+check "$(num "$B" net_cents)" "427000" "financeiro: líquido = receita - despesa"
+check "$(countf "$B" month)" "12" "financeiro: 12 meses por padrão"
+grep -q '"revenue_by_kind":\[{"kind":"pix","total_cents":350000}\]' <<<"$B" \
+  && ok "financeiro: receita por tipo = cobrança pix de 350000" || bad "financeiro: receita por tipo divergente"
+R=$(req GET "/reports/financials?months=3" "$ALICE_TOKEN" "")
+check "$(countf "$(split_body "$R")" month)" "3" "financeiro: months=3 devolve 3 meses"
+
+# --- isolamento: carol (comum) NÃO enxerga nada da alice em nenhum relatório
+R=$(req GET /reports/cashflow "$CAROL_TOKEN" "")
+B=$(split_body "$R")
+check "$(sumf "$B" in_cents)$(sumf "$B" out_cents)" "00" "carol NÃO vê o cashflow da alice (RLS)"
+R=$(req GET /reports/statement "$CAROL_TOKEN" "")
+check "$(num "$(split_body "$R")" transaction_count)" "0" "carol NÃO vê o extrato da alice (RLS)"
+R=$(req GET /reports/reconciliation "$CAROL_TOKEN" "")
+check "$(num "$(split_body "$R")" total)" "0" "carol NÃO vê a conciliação da alice (RLS)"
+R=$(req GET /reports/financials "$CAROL_TOKEN" "")
+B=$(split_body "$R")
+check "$(num "$B" revenue_cents)$(num "$B" expense_cents)$(num "$B" balance_cents)" "000" "carol NÃO vê o financeiro da alice (RLS)"
+grep -q '"revenue_by_kind":\[\]' <<<"$B" && ok "carol: receita por tipo vazia" || bad "carol vê receita por tipo da alice"
+
+# --- GET /admin/reports/volume (bob já é admin; alice e carol não)
+R=$(req GET /admin/reports/volume "" "")
+check "$(split_status "$R")" "401" "volume admin exige autenticação"
+R=$(req GET /admin/reports/volume "$CAROL_TOKEN" "")
+check "$(split_status "$R")" "403" "usuário comum NÃO lê o volume admin"
+R=$(req GET /admin/reports/volume "$ALICE_TOKEN" "")
+check "$(split_status "$R")" "403" "alice (viewer, com movimento) NÃO lê o volume admin"
+R=$(req GET /admin/reports/volume "$BOB_TOKEN" "")
+check "$(split_status "$R")" "200" "admin lê o volume"
+B=$(split_body "$R")
+check "$(countf "$B" day)" "30" "volume admin cobre 30 dias"
+# O banco persiste entre execuções do script e o staff vê TODOS os usuários,
+# então o total é >= ao movimento desta execução (não igual).
+[ "$(sumf "$B" in_cents)" -ge 447000 ] && ok "volume admin inclui as entradas da alice (>= 447000)" || bad "volume admin não inclui as entradas da alice"
+[ "$(sumf "$B" out_cents)" -ge 20000 ] && ok "volume admin inclui as saídas da alice (>= 20000)" || bad "volume admin não inclui as saídas da alice"
 
 echo "== Sessão =="
 R=$(req POST /auth/refresh "" "{\"refresh_token\":\"$ALICE_REFRESH\"}")

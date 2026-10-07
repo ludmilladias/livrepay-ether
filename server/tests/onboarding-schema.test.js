@@ -63,6 +63,9 @@ for (const f of ["website", "socialNetwork", "companyInfo"]) {
 check("document.type CARTAO_CNPJ continua rejeitado", !onboardingSchema.safeParse({ ...pj, documentType: "CARTAO_CNPJ" }).success);
 check("PJ sem documentType é válido (default vale p/ PF e PJ)", onboardingSchema.safeParse(pj).success);
 
+check("PJ com CPF (11 digitos) rejeitado", !onboardingSchema.safeParse({ ...pj, taxId: "12345678900" }).success);
+check("PF com CNPJ (14 digitos) rejeitado", !onboardingSchema.safeParse({ ...pf, taxId: "12345678000190" }).success);
+
 const titular = { full_name: "Fulano", email: "f@x.com" };
 const parse = (v) => onboardingSchema.parse(v);
 

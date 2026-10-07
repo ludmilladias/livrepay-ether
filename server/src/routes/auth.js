@@ -8,7 +8,7 @@ import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { createDocumentUploadRouter } from "./onboarding-documents.js";
 import { toCitySlug } from "../cityslug.js";
-import { etherErrorFields } from "../safeLog.js";
+import { errorLogFields, etherErrorFields } from "../safeLog.js";
 import {
   signAccessToken,
   issueRefreshToken,
@@ -378,6 +378,18 @@ export const onboardingSchema = z
         if (b[field] === undefined) ctx.addIssue({ code: "custom", path: [field], message: `Obrigatório para ${why}` });
       }
     };
+    // taxId tem de combinar com personType (CPF=11 dígitos é FISICA; CNPJ=14 é
+    // JURIDICA). A regex do campo aceita os dois tamanhos; sem este cruzamento um
+    // CPF com personType JURIDICA seguiria até a Ether, que o recusa — e cada
+    // recusa de cadastro pode queimar o documento do lado dela (USR_DUP_005).
+    const expectedLen = b.personType === "FISICA" ? 11 : 14;
+    if (b.taxId.length !== expectedLen) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["taxId"],
+        message: b.personType === "FISICA" ? "Pessoa física exige CPF (11 dígitos)" : "Pessoa jurídica exige CNPJ (14 dígitos)",
+      });
+    }
     if (b.personType === "FISICA") {
       need(["nationality", "maritalStatus", "monthlyIncome", "hometown"], "pessoa física");
       need(["documentIssuingAgency", "documentIssueDate", "documentIssueState"], "pessoa física");
@@ -463,6 +475,115 @@ export function buildOnboardingPayload(b, titular) {
 }
 
 /**
+ * Cria a conta na Ether e GRAVA O VÍNCULO LOCAL (profiles.ether_user_id).
+ * Também é o caminho de RECONCILIAÇÃO de contas órfãs.
+ *
+ * O problema: criar na Ether e gravar o vínculo aqui são dois sistemas, sem
+ * transação comum. Se o `update` falha (foi o que aconteceu com o trigger
+ * quebrado, antes de 20260906000000), a conta existe na Ether sem vínculo local.
+ *
+ * Por que a reconciliação é "o usuário reenvia o onboarding" e NÃO um script nem
+ * uma rota admin que aceite um ether_user_id: (1) a Ether não tem busca por
+ * e-mail — o único jeito de recuperar o userId é repetir `POST /users/profile-data`,
+ * que faz upsert por e-mail e devolve o MESMO userId com `recovery: true`; e esse
+ * POST exige o payload completo (CPF, endereço...), que NÃO guardamos para quem
+ * ficou órfão; (2) o vínculo é a âncora de identidade financeira — uma primitiva
+ * "ligue este usuário àquele ether_user_id" digitada por humano, com um typo ou
+ * um e-mail trocado, ligaria alguém à conta bancária de outra pessoa. Aqui o
+ * userId só vem da resposta da Ether a uma requisição autenticada pelo JWT do
+ * próprio usuário, com o e-mail lido de auth.users (nunca do corpo).
+ * Reenviar, portanto, converge sozinho; o que faltava era (a) não deixar a
+ * janela de órfã aberta e (b) nunca falhar em silêncio.
+ *
+ * Ordem: o vínculo é gravado LOGO após o createUserProfile, antes de
+ * accept-terms/pep (duas chamadas de até 15 s cada, que antes ficavam dentro da
+ * janela). Se a gravação falha: loga os ids (sem PII) para reconciliação manual
+ * e responde 503 — reenviar recupera a conta. Se o userId já pertence a OUTRO
+ * perfil (índice único profiles_ether_user_id_idx): 409, sem sobrescrever.
+ *
+ * Dependências injetadas para teste sem Ether nem banco.
+ */
+export async function createAndLinkEtherAccount(
+  { userId, payload, taxId, phone, userAgent },
+  { createUserProfile, acceptTerms, submitPepDeclaration, withService },
+) {
+  let etherResult;
+  try {
+    etherResult = await createUserProfile(payload);
+  } catch (error) {
+    // Nunca error.body: a Ether ecoa o valor rejeitado (CPF, nascimento, renda).
+    console.error("Ether recusou o cadastro do cliente", { userId, ...etherErrorFields(error) });
+    throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
+  }
+
+  const etherUserId = etherResult.userId ?? etherResult.id;
+  if (!etherUserId) {
+    throw new ApiError(502, "Ether não retornou ID do usuário");
+  }
+  // `recovery: true` = a Ether achou um cadastro incompleto por e-mail e o
+  // reaproveitou (upsert) — é o sinal de que isto é uma reconciliação.
+  const recovered = etherResult.recovery === true;
+
+  try {
+    // service_role pode escrever ether_* (o usuário não: trigger + RLS).
+    await withService(async (client) => {
+      await client.query(
+        `update public.profiles
+            set ether_user_id = $2, ether_account_status = $3, tax_id = $4, phone = $5
+          where id = $1`,
+        [userId, etherUserId, toLocalStatus(etherResult.status), taxId, phone],
+      );
+    });
+  } catch (error) {
+    if (error?.code === "23505") {
+      console.error("ether_link_conflict: userId da Ether já vinculado a outro perfil", {
+        userId,
+        etherUserId,
+        recovered,
+        ...errorLogFields(error),
+      });
+      throw new ApiError(409, "Este cadastro já está vinculado a outra conta.", "ETHER_ACCOUNT_ALREADY_LINKED");
+    }
+    // Termo para ALERTA nos logs (ver SECURITY.md): conta existe na Ether, sem vínculo.
+    console.error("ETHER_ORFA: conta criada na Ether sem vínculo local — reenviar o onboarding reconcilia", {
+      userId,
+      etherUserId,
+      recovered,
+      ...errorLogFields(error),
+    });
+    throw new ApiError(
+      503,
+      "Cadastro iniciado, mas não foi possível concluí-lo agora. Tente novamente em instantes.",
+      "ETHER_LINK_PENDING",
+    );
+  }
+
+  if (recovered) {
+    console.log("ether_onboarding_recovered", { userId, etherUserId });
+  }
+
+  // Aceite de termos e declaração de PEP são exigidos antes da análise. Uma
+  // falha aqui não invalida o cadastro já criado — registramos e seguimos.
+  for (const [etapa, fn] of [
+    ["accept-terms", () => acceptTerms(etherUserId, { userAgent })],
+    ["pep-declaration", () => submitPepDeclaration(etherUserId)],
+  ]) {
+    try {
+      await fn();
+    } catch (error) {
+      console.error(`Ether recusou ${etapa}`, { userId, etherUserId, ...etherErrorFields(error) });
+    }
+  }
+
+  return {
+    etherUserId,
+    etherStatus: etherResult.status,
+    documentChecklist: etherResult.documentChecklist ?? null,
+    recovered,
+  };
+}
+
+/**
  * POST /auth/onboarding — inicia a abertura de conta na Ether.
  *
  * Fluxo conforme a documentação oficial (verificado em 2026-09-09):
@@ -512,58 +633,19 @@ authRouter.post(
 
     const payload = buildOnboardingPayload(b, titular);
 
-    let etherResult;
-    try {
-      etherResult = await createUserProfile(payload);
-    } catch (error) {
-      // Nunca error.body: a Ether ecoa o valor rejeitado (CPF, nascimento, renda).
-      console.error("Ether recusou o cadastro do cliente", {
-        userId: req.userId,
-        ...etherErrorFields(error),
-      });
-      throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
-    }
-
-    const etherUserId = etherResult.userId ?? etherResult.id;
-    if (!etherUserId) {
-      throw new ApiError(502, "Ether não retornou ID do usuário");
-    }
-
-    // Aceite de termos e declaração de PEP são exigidos antes da análise. Uma
-    // falha aqui não invalida o cadastro já criado — registramos e seguimos,
-    // para o cliente poder reenviar sem recriar o cadastro do zero.
-    for (const [etapa, fn] of [
-      ["accept-terms", () => acceptTerms(etherUserId, { userAgent: req.headers["user-agent"] })],
-      ["pep-declaration", () => submitPepDeclaration(etherUserId)],
-    ]) {
-      try {
-        await fn();
-      } catch (error) {
-        console.error(`Ether recusou ${etapa}`, {
-          userId: req.userId,
-          etherUserId,
-          ...etherErrorFields(error),
-        });
-      }
-    }
-
-    // Grava o vínculo no banco (service_role pode escrever ether_*).
-    await withService(async (client) => {
-      await client.query(
-        `update public.profiles
-            set ether_user_id = $2, ether_account_status = $3, tax_id = $4, phone = $5
-          where id = $1`,
-        [req.userId, etherUserId, toLocalStatus(etherResult.status), b.taxId, b.phone],
-      );
-    });
+    const linked = await createAndLinkEtherAccount(
+      { userId: req.userId, payload, taxId: b.taxId, phone: b.phone, userAgent: req.headers["user-agent"] },
+      { createUserProfile, acceptTerms, submitPepDeclaration, withService },
+    );
 
     // `documentChecklist.pending` (ex.: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA,
     // SELFIE_COM_DOC) diz ao frontend quais documentos pedir. Antes era
     // descartado; null se a Ether não devolver.
     res.status(201).json({
-      ether_user_id: etherUserId,
-      status: etherResult.status ?? "pending_documents",
-      document_checklist: etherResult.documentChecklist ?? null,
+      ether_user_id: linked.etherUserId,
+      status: linked.etherStatus ?? "pending_documents",
+      document_checklist: linked.documentChecklist,
+      recovered: linked.recovered,
       message: "Cadastro iniciado. Envie os documentos de KYC para liberar a conta.",
     });
   }),
