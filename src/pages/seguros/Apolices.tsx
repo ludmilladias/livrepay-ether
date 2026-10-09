@@ -86,8 +86,8 @@ const Apolices = () => {
 
   const getProdutoColor = (produto: string) => {
     if (produto.includes("Auto")) return "text-blue-600"
-    if (produto.includes("Residencial")) return "text-green-600"
-    if (produto.includes("Vida")) return "text-red-600"
+    if (produto.includes("Residencial")) return "text-success"
+    if (produto.includes("Vida")) return "text-destructive"
     if (produto.includes("Empresarial")) return "text-orange-600"
     return "text-gray-600"
   }
@@ -135,7 +135,7 @@ const Apolices = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Valor Segurado</CardTitle>
-            <Shield className="h-4 w-4 text-green-600" />
+            <Shield className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">R$ 2.8M</div>
@@ -191,7 +191,7 @@ const Apolices = () => {
                 <div className="text-sm text-muted-foreground">João Silva Santos</div>
               </div>
               <div className="text-right">
-                <div className="font-semibold text-red-600">15/03/2024</div>
+                <div className="font-semibold text-destructive">15/03/2024</div>
                 <div className="text-sm text-muted-foreground">R$ 237,50</div>
               </div>
             </div>
@@ -252,7 +252,7 @@ const Apolices = () => {
                     </TableCell>
                     <TableCell className="font-medium">{apolice.seguradora}</TableCell>
                     <TableCell>
-                      <div className="font-semibold text-green-600">{apolice.valorSegurado}</div>
+                      <div className="font-semibold text-success">{apolice.valorSegurado}</div>
                       <div className="text-sm text-muted-foreground">
                         Prêmio: {apolice.premio}
                       </div>
@@ -275,7 +275,7 @@ const Apolices = () => {
                     </TableCell>
                     <TableCell>
                       {apolice.proximoVencimento !== "-" ? (
-                        <div className={diasVenc <= 7 ? "text-red-600" : diasVenc <= 30 ? "text-yellow-600" : ""}>
+                        <div className={diasVenc <= 7 ? "text-destructive" : diasVenc <= 30 ? "text-yellow-600" : ""}>
                           <div>{apolice.proximoVencimento}</div>
                           <div className="text-xs text-muted-foreground">
                             {diasVenc > 0 ? `${diasVenc} dias` : "Vencido"}
@@ -327,7 +327,7 @@ const Apolices = () => {
                   <div>
                     <div className="text-sm text-muted-foreground">Automotivo</div>
                     <div className="text-lg font-bold">6 apólices</div>
-                    <div className="text-xs text-green-600">R$ 980K segurados</div>
+                    <div className="text-xs text-success">R$ 980K segurados</div>
                   </div>
                 </div>
               </CardContent>
@@ -336,13 +336,13 @@ const Apolices = () => {
             <Card>
               <CardContent className="p-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-green-100 text-green-600 rounded-full flex items-center justify-center">
+                  <div className="w-8 h-8 bg-green-100 text-success rounded-full flex items-center justify-center">
                     <Shield className="h-4 w-4" />
                   </div>
                   <div>
                     <div className="text-sm text-muted-foreground">Residencial</div>
                     <div className="text-lg font-bold">4 apólices</div>
-                    <div className="text-xs text-green-600">R$ 1.2M segurados</div>
+                    <div className="text-xs text-success">R$ 1.2M segurados</div>
                   </div>
                 </div>
               </CardContent>
@@ -351,13 +351,13 @@ const Apolices = () => {
             <Card>
               <CardContent className="p-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-red-100 text-red-600 rounded-full flex items-center justify-center">
+                  <div className="w-8 h-8 bg-red-100 text-destructive rounded-full flex items-center justify-center">
                     <Shield className="h-4 w-4" />
                   </div>
                   <div>
                     <div className="text-sm text-muted-foreground">Vida</div>
                     <div className="text-lg font-bold">5 apólices</div>
-                    <div className="text-xs text-green-600">R$ 850K segurados</div>
+                    <div className="text-xs text-success">R$ 850K segurados</div>
                   </div>
                 </div>
               </CardContent>
@@ -372,7 +372,7 @@ const Apolices = () => {
                   <div>
                     <div className="text-sm text-muted-foreground">Empresarial</div>
                     <div className="text-lg font-bold">3 apólices</div>
-                    <div className="text-xs text-green-600">R$ 1.5M segurados</div>
+                    <div className="text-xs text-success">R$ 1.5M segurados</div>
                   </div>
                 </div>
               </CardContent>

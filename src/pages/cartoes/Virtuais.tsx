@@ -121,7 +121,7 @@ const Virtuais = () => {
   const getCategoriaColor = (categoria: string) => {
     switch (categoria) {
       case "E-commerce": return "text-blue-600"
-      case "Serviços": return "text-green-600"
+      case "Serviços": return "text-success"
       case "Turismo": return "text-orange-600"
       case "B2B": return "text-purple-600"
       default: return "text-gray-600"
@@ -169,7 +169,7 @@ const Virtuais = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Limite Total</CardTitle>
-            <CreditCard className="h-4 w-4 text-green-600" />
+            <CreditCard className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">R$ 45.500</div>
@@ -257,7 +257,7 @@ const Virtuais = () => {
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Disponível:</span>
-                      <span className="font-medium text-green-600">{cartao.limiteDisponivel}</span>
+                      <span className="font-medium text-success">{cartao.limiteDisponivel}</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-2">
                       <div 
@@ -405,7 +405,7 @@ const Virtuais = () => {
                 <TableRow key={transacao.id}>
                   <TableCell className="font-mono">{transacao.cartao}</TableCell>
                   <TableCell className="font-medium">{transacao.estabelecimento}</TableCell>
-                  <TableCell className="font-semibold text-green-600">{transacao.valor}</TableCell>
+                  <TableCell className="font-semibold text-success">{transacao.valor}</TableCell>
                   <TableCell>{transacao.data}</TableCell>
                   <TableCell>
                     <span className={`text-sm ${getCategoriaColor(transacao.categoria)}`}>

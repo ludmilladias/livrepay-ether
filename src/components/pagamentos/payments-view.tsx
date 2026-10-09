@@ -23,6 +23,7 @@ import {
   type Payment, type PaymentKind, type PixKeyType,
 } from "@/hooks/use-payments"
 import { formatCents, parseToCents } from "@/lib/money"
+import { ServiceUnavailableNotice } from "@/components/shared/service-unavailable-notice"
 
 export interface PaymentsViewProps {
   kind: PaymentKind
@@ -149,6 +150,7 @@ export function PaymentsView({
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <ServiceUnavailableNotice scope="payments" />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-foreground">{title}</h1>
@@ -305,7 +307,7 @@ export function PaymentsView({
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Concluídos</CardTitle>
-            <Icon className="h-4 w-4 text-green-600" />
+            <Icon className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             {payments.isLoading ? (

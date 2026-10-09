@@ -98,8 +98,8 @@ const Catalogo = () => {
   const getCategoriaColor = (categoria: string) => {
     switch (categoria) {
       case "Automotivo": return "text-blue-600 bg-blue-50"
-      case "Residencial": return "text-green-600 bg-green-50"
-      case "Vida": return "text-red-600 bg-red-50"
+      case "Residencial": return "text-success bg-green-50"
+      case "Vida": return "text-destructive bg-red-50"
       case "Saúde": return "text-purple-600 bg-purple-50"
       case "Empresarial": return "text-orange-600 bg-orange-50"
       case "Viagem": return "text-cyan-600 bg-cyan-50"
@@ -255,7 +255,7 @@ const Catalogo = () => {
                     <ul className="text-sm space-y-1">
                       {seguro.beneficios.slice(0, 3).map((beneficio, index) => (
                         <li key={index} className="flex items-center gap-2">
-                          <Shield className="h-3 w-3 text-green-600" />
+                          <Shield className="h-3 w-3 text-success" />
                           {beneficio}
                         </li>
                       ))}
@@ -266,7 +266,7 @@ const Catalogo = () => {
                     <div className="flex justify-between items-center mb-3">
                       <span className="text-sm text-muted-foreground">A partir de:</span>
                       <div className="text-right">
-                        <div className="text-lg font-bold text-green-600">{seguro.valorMinimo}</div>
+                        <div className="text-lg font-bold text-success">{seguro.valorMinimo}</div>
                         <div className="text-xs text-muted-foreground">por mês</div>
                       </div>
                     </div>

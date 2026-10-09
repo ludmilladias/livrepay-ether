@@ -93,8 +93,8 @@ const Cotacoes = () => {
 
   const getProdutoColor = (produto: string) => {
     if (produto.includes("Auto")) return "text-blue-600"
-    if (produto.includes("Residencial")) return "text-green-600"
-    if (produto.includes("Vida")) return "text-red-600"
+    if (produto.includes("Residencial")) return "text-success"
+    if (produto.includes("Vida")) return "text-destructive"
     if (produto.includes("Empresarial")) return "text-orange-600"
     return "text-gray-600"
   }
@@ -134,7 +134,7 @@ const Cotacoes = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Aprovadas</CardTitle>
-            <CheckCircle className="h-4 w-4 text-green-600" />
+            <CheckCircle className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">45</div>
@@ -265,7 +265,7 @@ const Cotacoes = () => {
                     </TableCell>
                     <TableCell className="font-medium">{cotacao.seguradora}</TableCell>
                     <TableCell>
-                      <div className="font-semibold text-green-600">{cotacao.valorSeguro}</div>
+                      <div className="font-semibold text-success">{cotacao.valorSeguro}</div>
                       <div className="text-sm text-muted-foreground">
                         {cotacao.vigencia}
                       </div>
@@ -276,7 +276,7 @@ const Cotacoes = () => {
                       )}
                     </TableCell>
                     <TableCell>
-                      <div className={cotacao.validade === "Expirada" ? "text-red-600" : ""}>
+                      <div className={cotacao.validade === "Expirada" ? "text-destructive" : ""}>
                         {cotacao.validade}
                       </div>
                     </TableCell>

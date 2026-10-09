@@ -97,11 +97,12 @@ const adminItems = [
   { title: "Auditoria", url: "/admin/auditoria" },
 ]
 
+// Mesmas rotas de dashboard/quick-actions.tsx.
 const quickActions = [
-  { title: "Criar Link", icon: Link },
-  { title: "Emitir BoléPIX", icon: FileBarChart },
-  { title: "PIX Cobrança", icon: Zap },
-  { title: "Simular Adiantamento", icon: PiggyBank },
+  { title: "Criar Link", icon: Link, to: "/cobranca/links" },
+  { title: "Emitir BoléPIX", icon: FileBarChart, to: "/cobranca/boletos" },
+  { title: "PIX Cobrança", icon: Zap, to: "/cobranca/pix" },
+  { title: "Simular Adiantamento", icon: PiggyBank, to: "/recebiveis/simulador" },
 ]
 
 export function AppSidebar() {
@@ -227,9 +228,11 @@ export function AppSidebar() {
               <SidebarMenu className="space-y-1">
                 {quickActions.map((action) => (
                   <SidebarMenuItem key={action.title}>
-                    <SidebarMenuButton className="hover:bg-sidebar-accent/50 text-sidebar-foreground/80 hover:text-sidebar-foreground h-9">
-                      <action.icon className="h-4 w-4" />
-                      <span className="ml-3">{action.title}</span>
+                    <SidebarMenuButton asChild className="h-9">
+                      <NavLink to={action.to} className={getNavCls(isActive(action.to))}>
+                        <action.icon className="h-4 w-4" />
+                        <span className="ml-3">{action.title}</span>
+                      </NavLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}

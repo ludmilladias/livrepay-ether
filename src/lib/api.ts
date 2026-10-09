@@ -90,6 +90,8 @@ async function parse(response: Response): Promise<unknown> {
 // Uma única renovação concorrente: se 3 requests receberem 401 ao mesmo tempo,
 // todas aguardam o mesmo refresh em vez de disparar três rotações (o que
 // invalidaria as duas últimas por detecção de reuso).
+const NO_REFRESH_PATHS = new Set(["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout", "/auth/logout-all"]);
+
 let refreshInFlight: Promise<boolean> | null = null;
 
 async function refreshSession(): Promise<boolean> {
@@ -144,8 +146,11 @@ async function request<T>(
     body: isBinary ? (body as Blob) : body !== undefined ? JSON.stringify(body) : undefined,
   });
 
-  // Access token expirado: renova uma vez e repete a requisição.
-  if (response.status === 401 && retry && readToken(REFRESH_KEY)) {
+  // Access token expirado: renova uma vez e repete a requisição. Não vale para
+  // os endpoints de credencial: um 401 em login/cadastro é credencial errada, não
+  // token expirado (renovar contaria a falha em dobro no bloqueio e giraria o
+  // refresh token). /auth/me e /auth/onboarding/* continuam renovando.
+  if (response.status === 401 && retry && !NO_REFRESH_PATHS.has(path) && readToken(REFRESH_KEY)) {
     if (await refreshSession()) return request<T>(method, path, body, false);
     clearSession();
   }

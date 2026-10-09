@@ -20,6 +20,7 @@ import {
   type Charge, type ChargeKind,
 } from "@/hooks/use-charges"
 import { formatCents, parseToCents } from "@/lib/money"
+import { ServiceUnavailableNotice } from "@/components/shared/service-unavailable-notice"
 
 /** Campo extra específico do tipo de cobrança; o valor vai para charges.payload. */
 export interface ChargeField {
@@ -47,7 +48,7 @@ export interface ChargesViewProps {
   icon: LucideIcon
   /** Exibe campo/coluna de cliente (boletos e assinaturas). */
   showCustomer?: boolean
-  /** Habilita emissão no provedor (Ether). Hoje só PIX. */
+  /** Habilita emissão no banco parceiro (Ether). Hoje só PIX. */
   canEmit?: boolean
   extraFields?: ChargeField[]
   extraColumns?: ChargeColumn[]
@@ -121,9 +122,9 @@ export function ChargesView({
   async function handleEmit(id: string) {
     try {
       await emitCharge.mutateAsync(id)
-      toast.success("Cobrança emitida no provedor. Código PIX disponível.")
+      toast.success("Cobrança emitida no banco parceiro. Código PIX disponível.")
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao emitir no provedor.")
+      toast.error(error instanceof Error ? error.message : "Falha ao emitir no banco parceiro.")
     }
   }
 
@@ -154,6 +155,7 @@ export function ChargesView({
 
   return (
     <div className="space-y-8 max-w-7xl">
+      <ServiceUnavailableNotice scope="charges" />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-foreground">{title}</h1>
@@ -364,7 +366,7 @@ export function ChargesView({
                     <TableRow key={charge.id}>
                       <TableCell className="font-medium">{charge.description}</TableCell>
                       {showCustomer && <TableCell>{charge.customer_name ?? "—"}</TableCell>}
-                      <TableCell className="font-semibold text-green-600">
+                      <TableCell className="font-semibold text-success">
                         {formatCents(charge.amount_cents)}
                       </TableCell>
                       <TableCell>{formatDate(charge.due_date)}</TableCell>
@@ -384,7 +386,7 @@ export function ChargesView({
                               size="sm"
                               disabled={emitCharge.isPending}
                               onClick={() => void handleEmit(charge.id)}
-                              title="Emitir no provedor e gerar código PIX"
+                              title="Emitir no banco parceiro e gerar código PIX"
                             >
                               <Send className="h-4 w-4" />
                             </Button>
@@ -397,7 +399,7 @@ export function ChargesView({
                               title="Copiar código PIX"
                             >
                               {copiedId === charge.id ? (
-                                <Check className="h-4 w-4 text-green-600" />
+                                <Check className="h-4 w-4 text-success" />
                               ) : (
                                 <Copy className="h-4 w-4" />
                               )}

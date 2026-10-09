@@ -118,7 +118,7 @@ const VerificacaoRecebiveis = () => {
                     </TableCell>
                     <TableCell>{formatDate(r.due_date)}</TableCell>
                     <TableCell>{formatCents(r.gross_cents)}</TableCell>
-                    <TableCell className="font-semibold text-green-600">
+                    <TableCell className="font-semibold text-success">
                       {formatCents(r.net_cents)}
                     </TableCell>
                     <TableCell>

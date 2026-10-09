@@ -101,9 +101,9 @@ const AppShell = () => (
   <SidebarProvider>
           <div className="min-h-screen flex w-full bg-background">
             <AppSidebar />
-            <div className="flex-1 flex flex-col">
+            <div className="flex-1 min-w-0 flex flex-col">
               <TopBar />
-              <main className="flex-1 p-8 overflow-auto ml-4">
+              <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-auto">
                 <OnboardingBanner />
                 <Routes>
                   <Route path="/" element={<Index />} />

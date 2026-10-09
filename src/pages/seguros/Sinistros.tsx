@@ -97,11 +97,11 @@ const Sinistros = () => {
 
   const getTipoColor = (tipo: string) => {
     switch (tipo) {
-      case "Colisão": return "text-red-600"
+      case "Colisão": return "text-destructive"
       case "Roubo": return "text-orange-600"
       case "Furto": return "text-purple-600"
       case "Invalidez Parcial": return "text-blue-600"
-      case "Incêndio": return "text-red-600"
+      case "Incêndio": return "text-destructive"
       case "Danos Elétricos": return "text-yellow-600"
       default: return "text-gray-600"
     }
@@ -142,7 +142,7 @@ const Sinistros = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Aprovados</CardTitle>
-            <CheckCircle className="h-4 w-4 text-green-600" />
+            <CheckCircle className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">18</div>
@@ -168,7 +168,7 @@ const Sinistros = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Valor Indenizado</CardTitle>
-            <FileText className="h-4 w-4 text-green-600" />
+            <FileText className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">R$ 285.400</div>
@@ -300,7 +300,7 @@ const Sinistros = () => {
                     <TableCell>{sinistro.dataOcorrencia}</TableCell>
                     <TableCell>
                       <div>
-                        <div className="font-semibold text-green-600">
+                        <div className="font-semibold text-success">
                           {sinistro.valorAprovado !== "-" ? sinistro.valorAprovado : sinistro.valorEstimado}
                         </div>
                         {sinistro.valorAprovado !== "-" && sinistro.valorEstimado !== sinistro.valorAprovado && (

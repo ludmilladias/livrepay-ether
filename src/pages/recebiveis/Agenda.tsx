@@ -211,7 +211,7 @@ const Agenda = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Em Atraso</CardTitle>
-            <Calendar className="h-4 w-4 text-red-600" />
+            <Calendar className="h-4 w-4 text-destructive" />
           </CardHeader>
           <CardContent>
             {summary.isLoading ? <Skeleton className="h-8 w-28" /> : (
@@ -261,7 +261,7 @@ const Agenda = () => {
                   <TableRow key={r.id}>
                     <TableCell className="font-medium">{r.contract_name ?? "—"}</TableCell>
                     <TableCell>{formatCents(r.gross_cents)}</TableCell>
-                    <TableCell className="font-semibold text-green-600">
+                    <TableCell className="font-semibold text-success">
                       {formatCents(r.net_cents)}
                     </TableCell>
                     <TableCell>{formatDate(r.due_date)}</TableCell>

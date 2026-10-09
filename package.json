@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test:unit": "node --experimental-strip-types --test src/lib/br-docs.test.ts src/lib/safe-redirect.test.ts",
     "db:test": "bash db/tests/run-tests.sh",
     "db:backup": "bash db/backup.sh"
   },

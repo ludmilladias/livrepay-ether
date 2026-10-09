@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { auth, onAuthChange, getCurrentUser, type SessionUser } from "@/lib/api";
+import { clearOnboardingDraft } from "@/lib/onboarding-draft";
 
 interface AuthState {
   user: SessionUser | null;
@@ -21,6 +22,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = async () => {
+    // Rascunho do cadastro (só campos não sensíveis) não sobrevive ao logout.
+    clearOnboardingDraft();
     await auth.logout();
     // Navegação completa: descarta qualquer estado sensível em memória.
     window.location.replace("/auth");

@@ -181,7 +181,7 @@ const Contratos = () => {
                     <TableCell className="text-muted-foreground">
                       {contract.acquirer ?? "—"}
                     </TableCell>
-                    <TableCell className="font-semibold text-green-600">
+                    <TableCell className="font-semibold text-success">
                       {formatCents(contract.pending_cents)}
                     </TableCell>
                   </TableRow>

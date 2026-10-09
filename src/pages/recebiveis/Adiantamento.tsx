@@ -138,7 +138,7 @@ const Adiantamento = () => {
                     <TableCell className="font-medium">{r.contract_name ?? "—"}</TableCell>
                     <TableCell>{formatDate(r.due_date)}</TableCell>
                     <TableCell>{formatCents(r.gross_cents)}</TableCell>
-                    <TableCell className="font-semibold text-green-600">
+                    <TableCell className="font-semibold text-success">
                       {formatCents(r.net_cents)}
                     </TableCell>
                     <TableCell>
@@ -186,7 +186,7 @@ const Adiantamento = () => {
                     <TableCell className="font-medium">{r.contract_name ?? "—"}</TableCell>
                     <TableCell>{formatDate(r.due_date)}</TableCell>
                     <TableCell>{formatCents(r.gross_cents)}</TableCell>
-                    <TableCell className="font-semibold text-green-600">
+                    <TableCell className="font-semibold text-success">
                       {formatCents(r.net_cents)}
                     </TableCell>
                   </TableRow>
@@ -208,7 +208,7 @@ const Adiantamento = () => {
                   (vencimento {confirming ? formatDate(confirming.due_date) : ""})?
                 </p>
                 <p className="text-sm">
-                  Você recebe <strong className="text-green-600">
+                  Você recebe <strong className="text-success">
                     {confirming ? formatCents(confirming.net_cents) : ""}
                   </strong>{" "}
                   na sua conta imediatamente.

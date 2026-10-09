@@ -130,7 +130,7 @@ const ExtratosCartoes = () => {
       case "E-commerce": return "text-blue-600"
       case "Streaming": return "text-purple-600"
       case "B2B": return "text-orange-600"
-      case "Alimentação": return "text-green-600"
+      case "Alimentação": return "text-success"
       case "Serviços TI": return "text-indigo-600"
       default: return "text-gray-600"
     }
@@ -205,7 +205,7 @@ const ExtratosCartoes = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Valor Total</CardTitle>
-            <DollarSign className="h-4 w-4 text-green-600" />
+            <DollarSign className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatarMoeda(valorTotal)}</div>
@@ -218,7 +218,7 @@ const ExtratosCartoes = () => {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Taxa de Aprovação</CardTitle>
-            <TrendingUp className="h-4 w-4 text-green-600" />
+            <TrendingUp className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
@@ -371,8 +371,8 @@ const ExtratosCartoes = () => {
                   <TableCell>
                     <div className={`font-semibold ${
                       transacao.tipo === "Débito" 
-                        ? transacao.status === "Aprovada" ? "text-red-600" : "text-muted-foreground"
-                        : "text-green-600"
+                        ? transacao.status === "Aprovada" ? "text-destructive" : "text-muted-foreground"
+                        : "text-success"
                     }`}>
                       {transacao.tipo === "Débito" ? "-" : "+"}
                       {formatarMoeda(transacao.valor)}
@@ -413,11 +413,11 @@ const ExtratosCartoes = () => {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">Transações Aprovadas:</span>
-                <span className="font-bold text-green-600">{transacoesAprovadas}</span>
+                <span className="font-bold text-success">{transacoesAprovadas}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">Transações Negadas:</span>
-                <span className="font-bold text-red-600">{totalTransacoes - transacoesAprovadas}</span>
+                <span className="font-bold text-destructive">{totalTransacoes - transacoesAprovadas}</span>
               </div>
             </div>
             

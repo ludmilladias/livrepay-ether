@@ -8,6 +8,7 @@ import {
 import { useNavigate } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { ServiceUnavailableNotice } from "@/components/shared/service-unavailable-notice"
 
 const quickActions = [
   {
@@ -57,13 +58,14 @@ export function QuickActions() {
       <CardHeader>
         <CardTitle className="text-lg font-semibold">Ações Rápidas</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <ServiceUnavailableNotice scope="both" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {quickActions.map((action, index) => (
             <Button
               key={index}
               variant="outline"
-              className="h-auto p-4 hover:shadow-md transition-all duration-200 hover:scale-105"
+              className="h-auto p-4 hover:shadow-md transition-shadow duration-200"
               onClick={() => navigate(action.to)}
             >
               <div className="flex flex-col items-center text-center gap-3 w-full">
