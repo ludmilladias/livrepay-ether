@@ -52,8 +52,10 @@ app.get("/health", async (_req, res) => {
     await pool.query("select 1");
     res.json({ status: "ok" });
   } catch (err) {
-        console.error("[health] DB unreachable:", err.message);
-        res.status(503).json({ status: "degraded", database: "unreachable", error: err.message });
+    // err.message do driver pode trazer host/usuário/porta do banco: só no log
+    // do servidor (código, sem mensagem), nunca na resposta pública.
+    console.error("[health] DB unreachable", { code: err?.code });
+    res.status(503).json({ status: "degraded", database: "unreachable" });
   }
 });
 

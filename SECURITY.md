@@ -60,8 +60,12 @@ sem um `SET ROLE` explícito, obrigando cada trecho de código a declarar em que
 
 - **Senhas**: bcrypt (12 rounds). Login com mensagem idêntica para e-mail inexistente e senha
   errada (evita enumeração de contas) e comparação dummy para não vazar por timing.
-- **Bloqueio progressivo**: 5 tentativas erradas travam a conta por 15 minutos.
-- **Rate limit**: 10 req/15min nas rotas de autenticação, 120 req/min global.
+- **Bloqueio progressivo**: 5 tentativas erradas travam a conta por 15 minutos. Durante o
+  bloqueio o login responde o MESMO 401 genérico dos demais casos (sem 423, que enumeraria
+  e-mails existentes), e o hash dummy (bcrypt real, 60 chars, mesmo custo) iguala o tempo.
+- **Rate limit**: 10 req/15min nas rotas de autenticação, 120 req/min global,
+  `POST /auth/onboarding` 5 tentativas/hora por usuário e por IP (cada recusa pode queimar o
+  CPF/CNPJ na Ether). CPF/CNPJ têm dígito verificador validado antes de qualquer chamada externa.
 - **Access token de 15 min** + **refresh token rotacionado** com detecção de reuso: apresentar
   um refresh token já usado invalida a sessão (sinal de token roubado).
 - **Refresh tokens hasheados** (SHA-256) no banco — vazamento da tabela não dá acesso.

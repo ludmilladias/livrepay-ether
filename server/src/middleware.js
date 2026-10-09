@@ -115,6 +115,18 @@ const BUSINESS_MESSAGES = [
 /** Mensagens de negócio que significam "sem permissão", não "dado inválido". */
 const FORBIDDEN_MESSAGES = ["Apenas admin pode"];
 
+/**
+ * Caminho seguro para log. Em /webhooks/<provedor>/<token> o segmento final é o
+ * token de autenticação do callback (ver webhook.js) — nunca vai para o log.
+ */
+export function safeLogPath(req) {
+  const raw = String(req?.originalUrl ?? req?.path ?? "").split("?")[0];
+  if (!raw.startsWith("/webhooks")) return req?.path;
+  const [, root, provider, token] = raw.split("/");
+  const base = `/${root}${provider ? `/${provider}` : ""}`;
+  return token === undefined || token === "" ? base : `${base}/:token`;
+}
+
 export function errorHandler(err, req, res, _next) {
   if (err instanceof ApiError) {
     return res.status(err.status).json({ error: err.message, code: err.code });
@@ -132,12 +144,12 @@ export function errorHandler(err, req, res, _next) {
   }
   // Privilégio insuficiente: quase sempre tentativa de burlar a RLS.
   if (err?.code === "42501") {
-    console.warn("Privilégio negado pelo banco", { path: req.path, userId: req.userId });
+    console.warn("Privilégio negado pelo banco", { path: safeLogPath(req), userId: req.userId });
     return res.status(403).json({ error: "Operação não permitida" });
   }
 
   if (FORBIDDEN_MESSAGES.some((m) => message.includes(m))) {
-    console.warn("Ação restrita a admin negada", { path: req.path, userId: req.userId });
+    console.warn("Ação restrita a admin negada", { path: safeLogPath(req), userId: req.userId });
     return res.status(403).json({ error: message, code: "FORBIDDEN" });
   }
 
@@ -147,6 +159,6 @@ export function errorHandler(err, req, res, _next) {
 
   // Nunca o objeto cru: em violação de constraint o `detail` do Postgres traz a
   // linha inteira ("Failing row contains (...)" com tax_id/phone).
-  console.error("Erro não tratado", { path: req.path, userId: req.userId, ...errorLogFields(err) });
+  console.error("Erro não tratado", { path: safeLogPath(req), userId: req.userId, ...errorLogFields(err) });
   return res.status(500).json({ error: "Erro interno do servidor" });
 }

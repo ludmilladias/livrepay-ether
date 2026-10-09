@@ -17,13 +17,13 @@ function check(label, cond, detail) {
 
 const address = { addressType: "residencial", zipcode: "90020007", street: "Rua A", number: "1", district: "Centro", city: "Porto Alegre", state: "RS" };
 const pf = {
-  taxId: "12345678900", personType: "FISICA", phone: "11999999999", dateBirth: "1990-05-15",
+  taxId: "52998224725", personType: "FISICA", phone: "11999999999", dateBirth: "1990-05-15",
   documentNumber: "123", documentIssuingAgency: "SSP/RS", documentIssueDate: "2015-10-20", documentIssueState: "RS",
   nationality: "brasileiro", maritalStatus: "single", monthlyIncome: "5000.00", hometown: "Porto Alegre",
   address,
 };
 const pj = {
-  taxId: "12345678000190", personType: "JURIDICA", phone: "11999999999", dateBirth: "2010-01-01",
+  taxId: "11222333000181", personType: "JURIDICA", phone: "11999999999", dateBirth: "2010-01-01",
   documentNumber: "123", website: "https://x.com.br", socialNetwork: "@x",
   address, maritalStatus: "SOLTEIRO(A)",
   companyInfo: { tradeName: "X", openingDate: "2010-01-01", revenue: "1000", responsible: { fullName: "A B", email: "a@b.com", phone: "11999999999" } },
@@ -63,8 +63,32 @@ for (const f of ["website", "socialNetwork", "companyInfo"]) {
 check("document.type CARTAO_CNPJ continua rejeitado", !onboardingSchema.safeParse({ ...pj, documentType: "CARTAO_CNPJ" }).success);
 check("PJ sem documentType é válido (default vale p/ PF e PJ)", onboardingSchema.safeParse(pj).success);
 
-check("PJ com CPF (11 digitos) rejeitado", !onboardingSchema.safeParse({ ...pj, taxId: "12345678900" }).success);
-check("PF com CNPJ (14 digitos) rejeitado", !onboardingSchema.safeParse({ ...pf, taxId: "12345678000190" }).success);
+check("PJ com CPF (11 digitos) rejeitado", !onboardingSchema.safeParse({ ...pj, taxId: "52998224725" }).success);
+check("PF com CNPJ (14 digitos) rejeitado", !onboardingSchema.safeParse({ ...pf, taxId: "11222333000181" }).success);
+
+// --- dígito verificador de CPF/CNPJ ------------------------------------------
+{
+  const { isValidCpf, isValidCnpj } = await import("../src/br-docs.js");
+  const issueMsg = (v) => onboardingSchema.safeParse(v).error?.issues.find((i) => i.path[0] === "taxId")?.message ?? "";
+  // CPF/CNPJ de teste gerados pelo algoritmo (não são de pessoas reais).
+  check("CPF válido aceito", isValidCpf("52998224725") && isValidCpf("11144477735"));
+  check("CNPJ válido aceito", isValidCnpj("11222333000181") && isValidCnpj("11444777000161"));
+  check("PF com CPF de DV errado rejeitado", !onboardingSchema.safeParse({ ...pf, taxId: "52998224726" }).success);
+  check("PF com 12345678900 (DV inválido) rejeitado", !onboardingSchema.safeParse({ ...pf, taxId: "12345678900" }).success);
+  check("PJ com CNPJ de DV errado rejeitado", !onboardingSchema.safeParse({ ...pj, taxId: "11222333000182" }).success);
+  check("PJ com 12345678000190 (DV inválido) rejeitado", !onboardingSchema.safeParse({ ...pj, taxId: "12345678000190" }).success);
+  for (const rep of ["00000000000", "11111111111", "99999999999"]) {
+    check(`CPF repetido ${rep} rejeitado`, !isValidCpf(rep) && !onboardingSchema.safeParse({ ...pf, taxId: rep }).success);
+  }
+  for (const rep of ["00000000000000", "11111111111111"]) {
+    check(`CNPJ repetido ${rep} rejeitado`, !isValidCnpj(rep) && !onboardingSchema.safeParse({ ...pj, taxId: rep }).success);
+  }
+  check("isValidCpf/isValidCnpj rejeitam máscara, vazio e não-string", !isValidCpf("529.982.247-25") && !isValidCpf("") && !isValidCpf(undefined) && !isValidCnpj("11.222.333/0001-81") && !isValidCnpj(null));
+  const m1 = issueMsg({ ...pf, taxId: "52998224726" });
+  const m2 = issueMsg({ ...pj, taxId: "11222333000182" });
+  check("mensagens em português, sem ecoar o documento",
+    /CPF inválido/.test(m1) && /CNPJ inválido/.test(m2) && !m1.includes("5299822472") && !m2.includes("1122233300018"), `${m1} | ${m2}`);
+}
 
 const titular = { full_name: "Fulano", email: "f@x.com" };
 const parse = (v) => onboardingSchema.parse(v);
@@ -91,7 +115,7 @@ check("PF: cnaeId/assessment/legalNature descartados do profile",
   !("cnaeId" in pay.profile) && !("assessment" in pay.profile) && !("legalNature" in pay.profile));
 check("PF: companyInfo descartado", !("companyInfo" in pay));
 check("PF: gender/maritalStatus mantidos", pay.profile.gender === "HOMEM_CISGENERO" && pay.profile.maritalStatus === "SOLTEIRO(A)");
-check("taxId segue sem máscara no payload", pay.profile.taxId === "12345678900");
+check("taxId segue sem máscara no payload", pay.profile.taxId === "52998224725");
 
 // --- address.city -> slug --------------------------------------------------
 // A forma livre NUNCA foi aceita em teste real pela Ether (só o slug); recusa pode

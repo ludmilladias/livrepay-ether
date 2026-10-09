@@ -8,6 +8,7 @@ import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { createDocumentUploadRouter } from "./onboarding-documents.js";
 import { toCitySlug } from "../cityslug.js";
+import { isValidCpf, isValidCnpj } from "../br-docs.js";
 import { errorLogFields, etherErrorFields } from "../safeLog.js";
 import {
   signAccessToken,
@@ -28,6 +29,38 @@ const loginLimiter = rateLimit({
   message: { error: "Muitas tentativas. Tente novamente em alguns minutos." },
   store: sharedRateLimitStore("rl:login:"),
 });
+
+// Onboarding: cada tentativa pode consumir/"queimar" um CPF/CNPJ na Ether e
+// dispara chamadas externas. Teto de 5 tentativas/hora por usuário e, mais folgado,
+// 30/hora por IP (CGNAT de operadora móvel e escritórios de contabilidade
+// compartilham IP; o teto por IP só contém abuso em massa). Todas as tentativas
+// contam, inclusive as rejeitadas por validação.
+const ONBOARDING_WINDOW_MS = 60 * 60 * 1000;
+const ONBOARDING_MAX_ATTEMPTS_PER_USER = 5;
+const ONBOARDING_MAX_ATTEMPTS_PER_IP = 30;
+const onboardingLimiterBase = {
+  windowMs: ONBOARDING_WINDOW_MS,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Muitas tentativas de cadastro. Tente novamente mais tarde.", code: "RATE_LIMITED" },
+};
+export const onboardingIpLimiter = rateLimit({
+  ...onboardingLimiterBase,
+  limit: ONBOARDING_MAX_ATTEMPTS_PER_IP,
+  store: sharedRateLimitStore("rl:onboarding-ip:"),
+});
+// Roda DEPOIS de requireAuth: a chave é o userId do JWT (nunca do corpo).
+export const onboardingUserLimiter = rateLimit({
+  ...onboardingLimiterBase,
+  limit: ONBOARDING_MAX_ATTEMPTS_PER_USER,
+  keyGenerator: (req) => `u:${req.userId}`,
+  store: sharedRateLimitStore("rl:onboarding-user:"),
+});
+
+// Hash bcrypt REAL (60 chars) gerado na inicialização com o mesmo custo dos
+// hashes de usuário. Um literal malformado (59 chars) faz o bcryptjs retornar
+// false sem computar, e o tempo curto denuncia e-mail inexistente.
+export const DUMMY_HASH = await bcrypt.hash("livrepay-dummy-password", config.auth.bcryptRounds);
 
 const credentials = z.object({
   email: z.string().email("E-mail inválido").max(320).transform((v) => v.toLowerCase().trim()),
@@ -98,13 +131,17 @@ authRouter.post(
     const invalid = new ApiError(401, "E-mail ou senha incorretos");
 
     if (!user) {
-      // Gasta tempo comparável ao bcrypt real para não vazar por timing.
-      await bcrypt.compare(password, "$2a$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv");
+      // Gasta o mesmo tempo de um bcrypt real (hash válido, mesmo custo) para
+      // não vazar por timing quais e-mails existem.
+      await bcrypt.compare(password, DUMMY_HASH);
       throw invalid;
     }
 
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
-      throw new ApiError(423, "Conta temporariamente bloqueada por tentativas malsucedidas");
+      // Mesmo 401 genérico dos demais casos (sem 423): um status distinto só
+      // para e-mail existente enumeraria contas. Também iguala o tempo.
+      await bcrypt.compare(password, DUMMY_HASH);
+      throw invalid;
     }
 
     const ok = await bcrypt.compare(password, user.password_hash);
@@ -389,6 +426,13 @@ export const onboardingSchema = z
         path: ["taxId"],
         message: b.personType === "FISICA" ? "Pessoa física exige CPF (11 dígitos)" : "Pessoa jurídica exige CNPJ (14 dígitos)",
       });
+    } else if (b.personType === "FISICA" ? !isValidCpf(b.taxId) : !isValidCnpj(b.taxId)) {
+      // Dígito verificador / sequência repetida. Mensagem sem ecoar o documento.
+      ctx.addIssue({
+        code: "custom",
+        path: ["taxId"],
+        message: b.personType === "FISICA" ? "CPF inválido. Confira os números digitados" : "CNPJ inválido. Confira os números digitados",
+      });
     }
     if (b.personType === "FISICA") {
       need(["nationality", "maritalStatus", "monthlyIncome", "hometown"], "pessoa física");
@@ -597,7 +641,9 @@ export async function createAndLinkEtherAccount(
  */
 authRouter.post(
   "/onboarding",
+  onboardingIpLimiter,
   requireAuth,
+  onboardingUserLimiter,
   validate(onboardingSchema),
   asyncRoute(async (req, res) => {
     const { createUserProfile, acceptTerms, submitPepDeclaration } = await import("../ether.js");
