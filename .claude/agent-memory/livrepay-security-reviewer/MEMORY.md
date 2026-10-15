@@ -1,1 +1,1 @@
-- [Revisão de segurança do onboarding Ether (2026-10-06)](project_revisao_seguranca_onboarding.md) — achados estruturais e pendências de rotação de credencial.
+- [Revisões de segurança onboarding/cadastro (2026-10-06, 2026-10-09 x2)](project_revisao_seguranca_onboarding.md) — fechados vs abertos (safeNext dot-segment, refresh família, rate limit CGNAT).

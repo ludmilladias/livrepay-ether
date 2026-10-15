@@ -1,27 +1,29 @@
 ---
 name: revisao-seguranca-onboarding-ether
-description: Revisão de segurança de 2026-10-06 do onboarding Ether/PII — achados principais e pendências de higiene de credencial
+description: Revisões de segurança do onboarding Ether/PII e do cadastro/frontend (2026-10-06, 2026-10-09 x2) — o que fechou e o que segue aberto
 metadata:
   type: project
 ---
 
-Em 2026-10-06 foi feita a primeira revisão de segurança independente do bloco de onboarding
-Ether (PII pesada) e da higiene de credenciais. Achados estruturais que tendem a reaparecer:
+**2026-10-06** (onboarding Ether/PII + credenciais):
+- Trigger `prevent_ether_field_tampering` — FECHADO (migration `20260906000000_fix_ether_tamper_trigger.sql`).
+- Credenciais Ether em `nao-subir*` dentro do OneDrive; rotação do clientSecret e senha admin pendentes.
+- Segredo de webhook ainda não entregue pela Ether (guard rejeita tudo: inoperante, não inseguro).
 
-- O trigger `prevent_ether_field_tampering` (migration `20260901000000_ether_subaccounts.sql`)
-  decide quem é serviço lendo a GUC `request.jwt.claim.role`, mas `withService()` em
-  `server/src/db.js` só faz `SET LOCAL ROLE service_role` e nunca seta essa GUC. Qualquer
-  gravação em `profiles.ether_*` por serviço cai no `raise exception`. Verificar isso antes de
-  concluir que o onboarding persiste.
-- Credenciais da Ether vivem em `nao-subir-ether-admin.env` (e-mail + senha do admin em texto
-  claro) e `nao-subir-ether-apikey.txt` (clientId/clientSecret), ambos fora do git (glob
-  `nao-subir*`) mas dentro de pasta sincronizada com OneDrive. Rotação do clientSecret e troca
-  da senha do admin ficaram recomendadas e pendentes.
-- Segredo de webhook ainda não entregue pela Ether; o código rejeita tudo quando vazio
-  (guard correto) — logo o webhook está inoperante, não inseguro.
+**2026-10-09, 2ª revisão (diff não commitado de hardening)** — FECHADOS com teste:
+dummy hash 60 chars, lockout sem 423, DV CPF/CNPJ (front e back equivalentes, 4M vetores),
+rate limit /auth/onboarding (5/h user+IP), token de webhook mascarado em log, /health sem err.message.
+Seguem ABERTOS / novos:
+- `safeNext` ainda devolve `//evil.com` para `/.//evil.com` e `/..//evil.com` (normalização do
+  `new URL`). Hoje não explorável só porque Auth usa `navigate(..., {replace:true})` → replaceState
+  lança SecurityError; com push (fallback `location.assign`) ou `location.replace` vira open redirect.
+- Rate limit por IP 5/h com CGNAT (comum em móvel BR) e `trust proxy 1` (topologia de prod não verificada).
+- Refresh: reuso não revoga a família; SECURITY.md continua afirmando que revoga.
+- Rascunho em localStorage guarda razão social (MEI antigo = nome + CPF).
+- Sem verificação de e-mail; /auth/register 409 enumera; sem gate KYC; CSP/HSTS do SPA fora do repo.
+- CNPJ alfanumérico (RFB, desde jul/2026) rejeitado por ambos validadores — funcional, a confirmar com Ether.
 
-**Why:** a usuária pediu explicitamente que segurança não ficasse de fora do levantamento, e
-esse diff (onboarding/PII/provedor) nunca tinha passado por revisão.
+**Why:** a usuária quer revisão independente antes do formulário público de cadastro PF/PJ.
 
-**How to apply:** em revisões futuras desse domínio, começar por [[SECURITY.md]] e checar se
-esses três pontos foram fechados antes de relatar algo novo.
+**How to apply:** em revisões futuras, começar por [[SECURITY.md]] e checar os itens abertos acima
+antes de relatar algo novo.
