@@ -64,7 +64,9 @@ const moduleItems = [
     items: [
       { title: "Transferências", url: "/pagamentos/transferencias" },
       { title: "Contas e Tributos", url: "/pagamentos/contas" },
-      { title: "Folha/Lotes", url: "/pagamentos/folha" },
+      // "Folha/Lotes" saiu da navegação por decisão da dona do produto (2026-10,
+      // substituída pelo Carnê de Cobrança). Ver comentário em App.tsx.
+      // { title: "Folha/Lotes", url: "/pagamentos/folha" },
     ]
   },
   // "Seguros" e "Cartões & Wallet" saíram da navegação por decisão da dona do

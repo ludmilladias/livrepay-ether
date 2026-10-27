@@ -30,7 +30,14 @@ import Contratos from "./pages/recebiveis/Contratos";
 // Pagamentos
 import Transferencias from "./pages/pagamentos/Transferencias";
 import Contas from "./pages/pagamentos/Contas";
-import Folha from "./pages/pagamentos/Folha";
+
+// Folha de Pagamento (funcionário): FORA DA NAVEGAÇÃO por decisão da dona do
+// produto (2026-10) — substituída pelo fluxo de Carnê de Cobrança em Cobrança.
+// A tela em src/pages/pagamentos/Folha.tsx foi preservada (chama a API real
+// de pagamentos em lote, que segue existindo), mas não tem link de navegação
+// nem rota. Para reativar: reimportar abaixo, reativar a rota comentada perto
+// de "Pagamentos Routes" e o item "Folha/Lotes" em app-sidebar.tsx.
+// import Folha from "./pages/pagamentos/Folha";
 
 // Seguros e Cartões & Wallet: FORA DA NAVEGAÇÃO por decisão da dona do produto
 // (2026-10). As telas em src/pages/seguros/* e src/pages/cartoes/* foram
@@ -123,7 +130,9 @@ const AppShell = () => (
                   {/* Pagamentos Routes */}
                   <Route path="/pagamentos/transferencias" element={<Transferencias />} />
                   <Route path="/pagamentos/contas" element={<Contas />} />
-                  <Route path="/pagamentos/folha" element={<Folha />} />
+                  {/* Folha de Pagamento: rota removida (ver comentário no import acima).
+                      Quem acessar /pagamentos/folha cai no NotFound. Para reativar:
+                      <Route path="/pagamentos/folha" element={<Folha />} /> */}
                   
                   {/* Seguros e Cartões & Wallet: rotas removidas (ver comentário nos imports acima).
                       Quem acessar /seguros/* ou /cartoes/* cai no NotFound. Para reativar:
