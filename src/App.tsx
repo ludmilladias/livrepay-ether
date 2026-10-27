@@ -20,6 +20,8 @@ import Links from "./pages/cobranca/Links";
 import Boletos from "./pages/cobranca/Boletos";
 import Pix from "./pages/cobranca/Pix";
 import Assinaturas from "./pages/cobranca/Assinaturas";
+import Carne from "./pages/cobranca/Carne";
+import CarneDetalhe from "./pages/cobranca/CarneDetalhe";
 
 // Recebíveis
 import Agenda from "./pages/recebiveis/Agenda";
@@ -120,6 +122,8 @@ const AppShell = () => (
                   <Route path="/cobranca/boletos" element={<Boletos />} />
                   <Route path="/cobranca/pix" element={<Pix />} />
                   <Route path="/cobranca/assinaturas" element={<Assinaturas />} />
+                  <Route path="/cobranca/carne" element={<Carne />} />
+                  <Route path="/cobranca/carne/:id" element={<CarneDetalhe />} />
                   
                   {/* Recebíveis Routes */}
                   <Route path="/recebiveis/agenda" element={<Agenda />} />

@@ -17,6 +17,9 @@ export interface Charge {
   provider: string | null;
   provider_charge_id: string | null;
   created_at: string;
+  /** Presentes só quando a cobrança é uma parcela de carnê (ver use-installment-plans.ts). */
+  installment_plan_id?: string | null;
+  installment_number?: number | null;
 }
 
 export interface ChargePayload {

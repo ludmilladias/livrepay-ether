@@ -46,6 +46,7 @@ const moduleItems = [
       { title: "BoléPIX", url: "/cobranca/boletos" },
       { title: "PIX Cobrança", url: "/cobranca/pix" },
       { title: "Assinaturas", url: "/cobranca/assinaturas" },
+      { title: "Carnê", url: "/cobranca/carne" },
     ]
   },
   {
