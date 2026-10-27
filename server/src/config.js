@@ -47,10 +47,22 @@ export const config = {
   },
 
   // Sem "*": em fintech, origem liberada é sessão do usuário exposta.
-  allowedOrigins: optional("ALLOWED_ORIGINS", "http://localhost:8080")
-    .split(",")
-    .map((o) => o.trim())
-    .filter(Boolean),
+  //
+  // Em produção, o domínio oficial do frontend é sempre incluído, mesmo que
+  // ALLOWED_ORIGINS esteja ausente ou mal configurada no painel do App
+  // Platform — isso evita que um CORS quebrado derrube login/cadastro em
+  // produção por uma env var esquecida. Não é "allow all": continua sendo
+  // uma lista explícita, só com um piso conhecido para o único frontend
+  // legítimo hoje.
+  allowedOrigins: Array.from(
+    new Set([
+      ...optional("ALLOWED_ORIGINS", "http://localhost:8080")
+        .split(",")
+        .map((o) => o.trim())
+        .filter(Boolean),
+      ...(isProduction ? ["https://livrepay.digital", "https://www.livrepay.digital"] : []),
+    ]),
+  ),
 
   auth: {
     bcryptRounds: Number(optional("BCRYPT_ROUNDS", "12")),
