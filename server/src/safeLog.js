@@ -7,10 +7,21 @@
  * SEMPRE estes helpers, nunca o objeto de erro nem `error.body`.
  */
 
-/** Código do erro da Ether só se tiver cara de código (nunca mensagem/corpo livre). */
+/**
+ * Código do erro da Ether só se tiver cara de código (nunca mensagem/corpo livre).
+ *
+ * A Ether manda o código de negócio em `message` (ex.: `{"error":"Bad
+ * Request","message":"USR_DUP_005"}`, visto em chamada real), não em `code`.
+ * Ler só `code`/`error` fazia todo log de produção sair `code: undefined`. O
+ * regex continua barrando texto livre (que pode ecoar CPF/endereço), então
+ * `message` só passa quando é um código.
+ */
 export function safeEtherCode(error) {
-  const code = error?.body?.code ?? error?.body?.error;
-  return typeof code === "string" && /^[A-Z0-9_]{3,40}$/.test(code) ? code : undefined;
+  const body = error?.body;
+  for (const candidate of [body?.code, body?.message, body?.error]) {
+    if (typeof candidate === "string" && /^[A-Z0-9_]{3,40}$/.test(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 /**
@@ -30,7 +41,15 @@ export function safeEtherCode(error) {
  */
 export function etherErrorFields(error) {
   if (error?.name === "EtherError") {
-    return { status: error.status, code: safeEtherCode(error) };
+    return {
+      status: error.status,
+      code: safeEtherCode(error),
+      // Resposta não-JSON (página HTML de WAF/gateway, ver call() em ether.js):
+      // só o fato e o content-type — nunca o preview do corpo.
+      ...(error.body?.error === "RespostaNaoJSON"
+        ? { nonJson: true, contentType: typeof error.body.contentType === "string" ? error.body.contentType.slice(0, 80) : undefined }
+        : {}),
+    };
   }
   return {
     status: error?.status,

@@ -86,7 +86,12 @@ export const config = {
     cognitoAppClientId: optional("ETHER_COGNITO_APP_CLIENT_ID", ""),
     cognitoUserPoolId: optional("ETHER_COGNITO_USER_POOL_ID", ""),
     // tenantUrl do LivrePay na Ether (usado no onboarding de sub-contas).
-    tenantUrl: optional("ETHER_TENANT_URL", "livrepay.digital"),
+    // Confirmado pelo suporte da Ether (2026-09-29) e por teste real
+    // (2026-10-27): tem de ser o subdomínio "api.livrepay.digital". O domínio
+    // nu ("livrepay.digital", default antigo) faz /users/profile-data
+    // responder 404 USR_NOT_001 — e a produção ficou com esse default por
+    // não ter ETHER_TENANT_URL configurada.
+    tenantUrl: optional("ETHER_TENANT_URL", "api.livrepay.digital"),
   },
 
   // Sem isso, rate limit vira MemoryStore por instância: com 2+ réplicas atrás
