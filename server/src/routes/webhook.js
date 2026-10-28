@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { withService } from "../db.js";
 import { asyncRoute } from "../middleware.js";
 import { errorLogFields } from "../safeLog.js";
+import { normalizePixPayload } from "../etherEvents.js";
 
 export const webhookRouter = Router();
 
@@ -29,58 +30,60 @@ function safeEqual(a, b) {
 export async function processProviderEvent(client, { eventType, payload, eventId }) {
   switch (eventType) {
     case "pix.deposit.confirmed": {
-      const providerId = payload.pixId;
-      const amount = payload.amount;
-      if (!providerId || typeof amount !== "number") {
+      const pix = normalizePixPayload(payload);
+      if (!pix.ids.length || pix.amount === null) {
         throw new Error("payload sem pixId/amount");
       }
 
       const { rows } = await client.query(
         `select id from public.charges
-          where provider = 'ether' and provider_charge_id = $1`,
-        [providerId],
+          where provider = 'ether' and provider_charge_id = any($1::text[])`,
+        [pix.ids],
       );
-      if (!rows[0]) throw new Error(`nenhuma cobrança para pixId ${providerId}`);
+      if (!rows[0]) throw new Error(`nenhuma cobrança para pixId ${pix.ids[0]}`);
+      if (rows.length > 1) throw new Error(`pixId ${pix.ids[0]} casa com mais de uma cobrança`);
 
       // Idempotente: se já estiver 'paid', não credita de novo.
       await client.query(`select public.provider_confirm_charge($1, $2, $3, $4)`, [
         rows[0].id,
-        amount,
-        payload.status ?? null,
-        { e2e: payload.e2e ?? null, provider_event_id: eventId },
+        pix.amount,
+        pix.status,
+        { e2e: pix.e2e, provider_event_id: eventId },
       ]);
       break;
     }
 
     case "pix.withdraw.confirmed": {
-      const providerId = payload.pixId;
-      if (!providerId) throw new Error("payload sem pixId");
+      const pix = normalizePixPayload(payload);
+      if (!pix.ids.length) throw new Error("payload sem pixId");
 
       const { rows } = await client.query(
-        `select id from public.payments
-          where provider = 'ether' and provider_payment_id = $1`,
-        [providerId],
+        `select id, provider_payment_id from public.payments
+          where provider = 'ether' and provider_payment_id = any($1::text[])`,
+        [pix.ids],
       );
-      if (!rows[0]) throw new Error(`nenhum pagamento para pixId ${providerId}`);
+      if (!rows[0]) throw new Error(`nenhum pagamento para pixId ${pix.ids[0]}`);
+      if (rows.length > 1) throw new Error(`pixId ${pix.ids[0]} casa com mais de um pagamento`);
 
       await client.query(`select public.provider_complete_payment($1, $2, $3)`, [
         rows[0].id,
-        providerId,
-        payload.status ?? null,
+        rows[0].provider_payment_id,
+        pix.status,
       ]);
       break;
     }
 
     case "pix.withdraw.failed": {
-      const providerId = payload.pixId;
-      if (!providerId) throw new Error("payload sem pixId");
+      const pix = normalizePixPayload(payload);
+      if (!pix.ids.length) throw new Error("payload sem pixId");
 
       const { rows } = await client.query(
         `select id, status from public.payments
-          where provider = 'ether' and provider_payment_id = $1`,
-        [providerId],
+          where provider = 'ether' and provider_payment_id = any($1::text[])`,
+        [pix.ids],
       );
-      if (!rows[0]) throw new Error(`nenhum pagamento para pixId ${providerId}`);
+      if (!rows[0]) throw new Error(`nenhum pagamento para pixId ${pix.ids[0]}`);
+      if (rows.length > 1) throw new Error(`pixId ${pix.ids[0]} casa com mais de um pagamento`);
 
       // Só estorna o que ainda está em processamento. Falha reportada para
       // algo já concluído exige conciliação, não mexer no saldo.

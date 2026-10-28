@@ -14,6 +14,7 @@
     "test:documents": "node tests/onboarding-documents.test.js",
     "test:privacy": "node tests/log-privacy.test.js",
     "test:webhook": "node tests/webhook-signature.test.js",
+    "test:ether-events": "node tests/ether-events.test.js",
     "test:auth": "node tests/auth-hardening.test.js"
   },
   "dependencies": {
