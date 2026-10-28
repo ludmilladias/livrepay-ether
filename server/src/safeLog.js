@@ -13,9 +13,32 @@ export function safeEtherCode(error) {
   return typeof code === "string" && /^[A-Z0-9_]{3,40}$/.test(code) ? code : undefined;
 }
 
-/** { status, code } de um erro da Ether — nada do corpo. */
+/**
+ * { status, code } de um erro da Ether — nada do corpo.
+ *
+ * Dois tipos de erro chegam aqui:
+ *  1. `EtherError` (ether.js): a Ether respondeu com um HTTP não-2xx. `status`
+ *     e `code` (quando a Ether manda um código de negócio reconhecível) bastam.
+ *  2. Erro de rede cru (fetch nunca completou: DNS, TLS, conexão recusada,
+ *     ECONNRESET...) — `fetchWithTimeout` só embrulha em EtherError(504) o
+ *     caso de abort por timeout; qualquer outra falha de rede sobe como o
+ *     erro original do `fetch`/undici, sem `.status` nem `.body`. Nesse caso
+ *     `name`/`message`/`cause.code` são técnicos (ex.: "ENOTFOUND api...",
+ *     nunca CPF/endereço), então são seguros de logar — e é exatamente o que
+ *     faltava para diferenciar "Ether recusou" de "não conseguimos nem falar
+ *     com a Ether".
+ */
 export function etherErrorFields(error) {
-  return { status: error?.status, code: safeEtherCode(error) };
+  if (error?.name === "EtherError") {
+    return { status: error.status, code: safeEtherCode(error) };
+  }
+  return {
+    status: error?.status,
+    code: safeEtherCode(error),
+    errorName: typeof error?.name === "string" ? error.name : undefined,
+    errorMessage: typeof error?.message === "string" ? error.message.slice(0, 200) : undefined,
+    causeCode: typeof error?.cause?.code === "string" ? error.cause.code : undefined,
+  };
 }
 
 const SAFE_PG_TEXT = /^[A-Za-z0-9_.$ -]{1,100}$/;
