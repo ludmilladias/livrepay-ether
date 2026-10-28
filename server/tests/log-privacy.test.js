@@ -116,7 +116,10 @@ profileDataResponse = () => jsonRes(400, echoBody("USR_VAL_004"));
 logs.length = 0;
 let r = await postOnboarding();
 let logText = logs.join("\n");
-c("cadastro recusado: resposta 502 genérica", r.status === 502, JSON.stringify(r));
+// 422, não 502: a borda da DO troca 5xx pela página HTML dela e o cliente
+// nunca veria a mensagem (incidente 2026-10-27).
+c("cadastro recusado: resposta 422 ETHER_REJECTED (não mascarada pela borda)",
+  r.status === 422 && r.json?.code === "ETHER_REJECTED", JSON.stringify(r));
 c("cadastro recusado: resposta não contém PII", leaks(r.text).length === 0, leaks(r.text).join(","));
 c("cadastro recusado: log não contém PII", leaks(logText).length === 0, leaks(logText).join(","));
 c("cadastro recusado: log mantém userId, status e código da Ether",

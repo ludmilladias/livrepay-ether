@@ -84,14 +84,32 @@ const base = { userId: USER_ID, payload: { any: "payload" }, taxId: "12345678900
   }
 }
 
-// --- 502: Ether recusa o cadastro -------------------------------------------
+// --- Recusas da Ether: status por tipo de falha ------------------------------
+// Erro de rede/sem status (mock sem .status) -> falha de integração, 502.
 {
   const d = deps({ createUserProfile: async () => { throw Object.assign(new Error("recusado"), { body: { message: "CPF inválido" } }); } });
   try {
     await createAndLinkEtherAccount(base, d);
     check("Ether recusando o cadastro lança erro", false);
   } catch (error) {
-    check("Ether recusando o cadastro -> 502", error.status === 502);
+    check("falha sem status HTTP -> 502 PROVIDER_UNAVAILABLE", error.status === 502 && error.code === "PROVIDER_UNAVAILABLE");
+  }
+}
+
+for (const [label, etherStatus, body, expStatus, expCode] of [
+  ["dado recusado (400 USR_VAL_004)", 400, { error: "Bad Request", message: "USR_VAL_004" }, 422, "ETHER_REJECTED"],
+  ["documento duplicado (400 USR_DUP_005)", 400, { error: "Bad Request", message: "USR_DUP_005" }, 409, "ETHER_DUPLICATE_DOCUMENT"],
+  ["WAF/permissão (403)", 403, null, 502, "PROVIDER_UNAVAILABLE"],
+  ["tenant inexistente (404 USR_NOT_001)", 404, { error: "Not Found", message: "USR_NOT_001" }, 502, "PROVIDER_UNAVAILABLE"],
+]) {
+  const err = Object.assign(new Error("Ether API error"), { name: "EtherError", status: etherStatus, body });
+  const d = deps({ createUserProfile: async () => { throw err; } });
+  try {
+    await createAndLinkEtherAccount(base, d);
+    check(`${label} lança erro`, false);
+  } catch (error) {
+    check(`${label} -> ${expStatus} ${expCode}`, error.status === expStatus && error.code === expCode);
+    check(`${label}: mensagem não ecoa o corpo da Ether`, !String(error.message).includes("USR_"));
   }
 }
 

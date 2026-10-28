@@ -9,7 +9,7 @@ import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { createDocumentUploadRouter } from "./onboarding-documents.js";
 import { toCitySlug } from "../cityslug.js";
 import { isValidCpf, isValidCnpj } from "../br-docs.js";
-import { errorLogFields, etherErrorFields } from "../safeLog.js";
+import { errorLogFields, etherErrorFields, safeEtherCode } from "../safeLog.js";
 import {
   signAccessToken,
   issueRefreshToken,
@@ -528,6 +528,45 @@ export function buildOnboardingPayload(b, titular) {
 }
 
 /**
+ * Traduz a falha de POST /users/profile-data numa resposta para o cliente.
+ *
+ * Por que não 502 para tudo: a borda da DigitalOcean/Cloudflare SUBSTITUI
+ * qualquer 502/503/504 da origem pela página HTML genérica dela — o
+ * navegador via "504 Gateway Timeout" e nunca recebia a nossa mensagem
+ * (incidente 2026-10-27). Então:
+ *  - Recusa por DADO do cliente (400/409/422 da Ether) -> 4xx com mensagem
+ *    acionável, que chega intacta ao formulário.
+ *  - USR_DUP_005 (documento já existe na Ether) -> 409 próprio: reenviar com
+ *    os mesmos dados nunca resolve, e cada recusa conta no limite de tentativas.
+ *  - 401/403/404 (credencial, WAF, tenant) e rede/timeout são falha da
+ *    INTEGRAÇÃO, não do cliente -> 502 (o cliente não tem o que corrigir).
+ * Mensagens estáticas: nada do corpo da Ether (que ecoa CPF/renda) vai ao cliente.
+ */
+export function onboardingProviderError(error) {
+  const status = error?.status;
+  const code = safeEtherCode(error);
+  if (code === "USR_DUP_005") {
+    return new ApiError(
+      409,
+      "Este CPF/CNPJ já tem um cadastro no banco parceiro. Fale com o atendimento do LivrePay para concluir a abertura da conta.",
+      "ETHER_DUPLICATE_DOCUMENT",
+    );
+  }
+  if (status === 400 || status === 409 || status === 422) {
+    return new ApiError(
+      422,
+      "O banco parceiro recusou o cadastro. Confira os dados informados e tente novamente.",
+      "ETHER_REJECTED",
+    );
+  }
+  return new ApiError(
+    502,
+    "Não foi possível iniciar o cadastro agora. Tente novamente em alguns minutos.",
+    "PROVIDER_UNAVAILABLE",
+  );
+}
+
+/**
  * Cria a conta na Ether e GRAVA O VÍNCULO LOCAL (profiles.ether_user_id).
  * Também é o caminho de RECONCILIAÇÃO de contas órfãs.
  *
@@ -566,7 +605,7 @@ export async function createAndLinkEtherAccount(
   } catch (error) {
     // Nunca error.body: a Ether ecoa o valor rejeitado (CPF, nascimento, renda).
     console.error("Ether recusou o cadastro do cliente", { userId, ...etherErrorFields(error) });
-    throw new ApiError(502, "Não foi possível iniciar o cadastro. Verifique os dados e tente novamente.");
+    throw onboardingProviderError(error);
   }
 
   const etherUserId = etherResult.userId ?? etherResult.id;
