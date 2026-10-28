@@ -401,11 +401,14 @@ export const onboardingSchema = z
     companyInfo: z.object({
       tradeName: z.string().min(1).max(140),
       openingDate: isoDate("Data de abertura (YYYY-MM-DD)"),
-      revenue: z.string().regex(/^\d+\.?\d*$/, "Faturamento mensal"),
+      // Doc: companyInfo.revenue é o faturamento ANUAL total (ex.: "1200000.00");
+      // o faturamento mensal vai em profile.monthlyIncome.
+      revenue: z.string().regex(/^\d+\.?\d*$/, "Faturamento anual, ex.: 1200000.00"),
       responsible: z.object({
         fullName: z.string().min(1).max(140),
         email: z.string().email(),
-        phone: z.string().regex(/^\d{10,11}$/),
+        // Doc: celular com DDD, exatamente 11 dígitos.
+        phone: z.string().regex(/^\d{11}$/, "Celular do representante com DDD, 11 dígitos"),
       }),
     }).optional(),
   })
@@ -439,6 +442,11 @@ export const onboardingSchema = z
       need(["documentIssuingAgency", "documentIssueDate", "documentIssueState"], "pessoa física");
     } else {
       need(["companyInfo", "website", "socialNetwork"], "pessoa jurídica");
+      // Matriz oficial (2026-10-28, guia privatedocs): nationality e monthlyIncome
+      // (faturamento mensal) são obrigatórios também em PJ, e o bloco `document`
+      // (os 5 campos) não distingue PF de PJ — em PJ é o documento do representante.
+      need(["nationality", "monthlyIncome"], "pessoa jurídica");
+      need(["documentIssuingAgency", "documentIssueDate", "documentIssueState"], "pessoa jurídica");
     }
     // Cidade que não vira slug confiável (sem letras/dígitos, ou slug de outra UF)
     // é recusada AQUI, antes de qualquer chamada à Ether.
@@ -500,7 +508,12 @@ export function buildOnboardingPayload(b, titular) {
       }),
     },
     // city -> slug (ver cityslug.js). O schema já garantiu que não é null.
-    address: { ...b.address, city: toCitySlug(b.address.city, b.address.state) },
+    // `complement` é opcional na doc: string vazia não deve ir (o formulário manda "").
+    address: definedOnly({
+      ...b.address,
+      complement: b.address.complement?.trim() || undefined,
+      city: toCitySlug(b.address.city, b.address.state),
+    }),
     document: {
       // PF e PJ: CARTEIRA_IDENTIDADE por padrão. Em PJ este objeto é o documento
       // pessoal do REPRESENTANTE LEGAL (guia PJ). "CARTAO_CNPJ" NÃO vale aqui —

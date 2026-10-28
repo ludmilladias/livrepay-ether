@@ -259,11 +259,11 @@ export function schemaFor(type: PersonType) {
         errorMap: () => ({ message: "Escolha o tipo de documento" }),
       }),
       documentNumber: required("Informe o número do documento").pipe(z.string().max(30, "Máximo de 30 caracteres")),
-      documentIssuingAgency: isPF
-        ? required("Informe o órgão emissor. Ex.: SSP").pipe(z.string().max(30, "Máximo de 30 caracteres"))
-        : z.string().max(30, "Máximo de 30 caracteres"),
-      documentIssueDate: isPF ? dateRange("a data de emissão", MIN_DATE, today, "A data não pode ser futura") : free,
-      documentIssueState: isPF ? z.enum(UFS, { errorMap: () => ({ message: "Escolha a UF de emissão" }) }) : free,
+      // Doc: o bloco `document` tem os 5 campos obrigatórios para PF e PJ (em PJ é o
+      // documento do representante legal).
+      documentIssuingAgency: required("Informe o órgão emissor. Ex.: SSP").pipe(z.string().max(30, "Máximo de 30 caracteres")),
+      documentIssueDate: dateRange("a data de emissão", MIN_DATE, today, "A data não pode ser futura"),
+      documentIssueState: z.enum(UFS, { errorMap: () => ({ message: "Escolha a UF de emissão" }) }),
 
       nationality: isPF ? z.enum(NATIONALITIES, { errorMap: () => ({ message: "Escolha a nacionalidade" }) }) : free,
       maritalStatus: isPF
@@ -286,12 +286,8 @@ export function schemaFor(type: PersonType) {
 
       respFullName: isPF ? free : required("Informe o nome do representante").pipe(z.string().max(140, "Máximo de 140 caracteres")),
       respEmail: isPF ? free : z.string().trim().email("E-mail inválido").max(320),
-      respPhone: isPF
-        ? free
-        : z.string().refine((v) => {
-            const d = onlyDigits(v);
-            return d.length === 10 || d.length === 11;
-          }, "Telefone com DDD, 10 ou 11 dígitos"),
+      // Doc: celular com DDD, exatamente 11 dígitos.
+      respPhone: isPF ? free : mobile("Celular do representante com DDD, 11 dígitos. Ex.: (11) 98888-7777"),
 
       website: isPF ? free : z.string().refine((v) => normalizeUrl(v) !== null, "Informe um endereço válido. Ex.: https://www.empresa.com.br"),
       socialNetwork: isPF
@@ -300,7 +296,7 @@ export function schemaFor(type: PersonType) {
     })
     .superRefine((v, ctx) => {
       // Emissão do documento não pode ser anterior ao nascimento.
-      if (isPF && v.documentIssueDate && v.dateBirth && v.documentIssueDate < v.dateBirth) {
+      if (v.documentIssueDate && v.dateBirth && v.documentIssueDate < v.dateBirth) {
         ctx.addIssue({
           code: "custom",
           path: ["documentIssueDate"],
@@ -347,13 +343,19 @@ export function buildPayload(v: OnboardingFormValues): OnboardingPayload {
     payload.monthlyIncome = normalizeMoney(v.monthlyIncome) ?? v.monthlyIncome;
     payload.hometown = v.hometown.trim();
   } else {
+    // A empresa informa o faturamento MENSAL. A Ether pede o mensal em
+    // profile.monthlyIncome e o ANUAL total em companyInfo.revenue (estimado: mensal x 12).
+    const monthly = normalizeMoney(v.revenue) ?? v.revenue;
+    const annual = Number.isFinite(Number(monthly)) ? ((Math.round(Number(monthly) * 100) * 12) / 100).toFixed(2) : monthly;
+    payload.nationality = "Brasileiro"; // obrigatório também em PJ na Ether
+    payload.monthlyIncome = monthly;
     payload.socialName = v.socialName.trim();
     payload.website = normalizeUrl(v.website) ?? v.website;
     payload.socialNetwork = normalizeUrl(v.socialNetwork) ?? v.socialNetwork;
     payload.companyInfo = {
       tradeName: v.tradeName.trim(),
       openingDate: v.openingDate,
-      revenue: normalizeMoney(v.revenue) ?? v.revenue,
+      revenue: annual,
       responsible: {
         fullName: v.respFullName.trim(),
         email: v.respEmail.trim(),

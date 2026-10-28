@@ -24,7 +24,9 @@ const pf = {
 };
 const pj = {
   taxId: "11222333000181", personType: "JURIDICA", phone: "11999999999", dateBirth: "2010-01-01",
-  documentNumber: "123", website: "https://x.com.br", socialNetwork: "@x",
+  documentNumber: "123", documentIssuingAgency: "SSP/SP", documentIssueDate: "2015-10-20", documentIssueState: "SP",
+  nationality: "Brasileiro", monthlyIncome: "50000.00",
+  website: "https://x.com.br", socialNetwork: "@x",
   address, maritalStatus: "SOLTEIRO(A)",
   companyInfo: { tradeName: "X", openingDate: "2010-01-01", revenue: "1000", responsible: { fullName: "A B", email: "a@b.com", phone: "11999999999" } },
 };
@@ -55,10 +57,15 @@ check("country 'US' rejeitado", !onboardingSchema.safeParse({ ...pf, address: { 
 
 r = onboardingSchema.safeParse(pj);
 check("PJ completo é válido (sem hometown)", r.success, JSON.stringify(r.error?.issues));
-for (const f of ["website", "socialNetwork", "companyInfo"]) {
+for (const f of [
+  "website", "socialNetwork", "companyInfo", "nationality", "monthlyIncome",
+  "documentIssuingAgency", "documentIssueDate", "documentIssueState",
+]) {
   const { [f]: _omit, ...rest } = pj;
   check(`PJ sem ${f} rejeitado`, !onboardingSchema.safeParse(rest).success);
 }
+check("PJ: celular do representante com 10 dígitos rejeitado (doc: 11)",
+  !onboardingSchema.safeParse({ ...pj, companyInfo: { ...pj.companyInfo, responsible: { ...pj.companyInfo.responsible, phone: "1133334444" } } }).success);
 // CARTAO_CNPJ vale no upload/checklist, NUNCA em document.type (dois vocabulários distintos).
 check("document.type CARTAO_CNPJ continua rejeitado", !onboardingSchema.safeParse({ ...pj, documentType: "CARTAO_CNPJ" }).success);
 check("PJ sem documentType é válido (default vale p/ PF e PJ)", onboardingSchema.safeParse(pj).success);
@@ -97,6 +104,12 @@ let pay = buildOnboardingPayload(parse(pj), titular);
 check("PJ: document.type = CARTEIRA_IDENTIDADE (representante legal)", pay.document.type === "CARTEIRA_IDENTIDADE");
 check("PF: document.type = CARTEIRA_IDENTIDADE por padrão", buildOnboardingPayload(parse(pf), titular).document.type === "CARTEIRA_IDENTIDADE");
 check("accountType NOMINAL", pay.accountType === "NOMINAL");
+check("PJ: nationality e monthlyIncome seguem no profile (obrigatórios na Ether)",
+  pay.profile.nationality === "Brasileiro" && pay.profile.monthlyIncome === "50000.00");
+check("PJ: document com os 5 campos",
+  ["type", "number", "issuingAgency", "issueDate", "issueState"].every((k) => k in pay.document));
+check("complement vazio não vai no address", !("complement" in buildOnboardingPayload(parse({ ...pf, address: { ...address, complement: "" } }), titular).address));
+check("complement preenchido vai no address", buildOnboardingPayload(parse({ ...pf, address: { ...address, complement: "Apto 3" } }), titular).address.complement === "Apto 3");
 
 pay = buildOnboardingPayload(parse({ ...pj, cnaeId: "6204000", assessment: "simples_nacional", legalNature: "206-2", socialName: "Razao Social LTDA" }), titular);
 check("PJ: cnaeId/assessment/legalNature dentro de profile (assessment normalizado)",

@@ -51,7 +51,7 @@ export function IdentificationStep() {
   );
 }
 
-function DocumentFields({ isPF }: { isPF: boolean }) {
+function DocumentFields() {
   return (
     <div className={GRID}>
       <SelectField name="documentType" label="Tipo de documento" options={DOCUMENT_TYPES} />
@@ -60,16 +60,14 @@ function DocumentFields({ isPF }: { isPF: boolean }) {
         name="documentIssuingAgency"
         label="Órgão emissor"
         placeholder="SSP"
-        optional={!isPF}
         autoComplete="off"
         maxLength={30}
       />
-      <SelectField name="documentIssueState" label="UF de emissão" options={UF_OPTIONS} optional={!isPF} />
+      <SelectField name="documentIssueState" label="UF de emissão" options={UF_OPTIONS} />
       <TextField
         name="documentIssueDate"
         label="Data de emissão"
         type="date"
-        optional={!isPF}
         min={MIN_DATE}
         max={todayISO()}
       />
@@ -84,7 +82,7 @@ export function DocumentStep() {
         title="Documento de identidade"
         description="Informe o RG ou a CNH. Você enviará a foto do documento no passo seguinte ao cadastro."
       />
-      <DocumentFields isPF />
+      <DocumentFields />
     </section>
   );
 }
@@ -185,7 +183,7 @@ export function RepresentativeStep() {
       </div>
       <div className="space-y-3">
         <h3 className="text-sm font-medium text-muted-foreground">Documento de identidade do representante</h3>
-        <DocumentFields isPF={false} />
+        <DocumentFields />
       </div>
     </section>
   );

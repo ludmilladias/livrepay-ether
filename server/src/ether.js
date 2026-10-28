@@ -230,6 +230,8 @@ const UPLOAD_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]
 export const UPLOAD_DOCUMENT_TYPES = new Set([
   "CARTEIRA_IDENTIDADE", "COMPROVANTE_RESIDENCIA", "SELFIE_COM_DOC",
   "CARTAO_CNPJ", "CONTRATO_SOCIAL",
+  // Guia PF: a CNH é aceita no lugar do RG.
+  "CARTEIRA_HABILITACAO",
 ]);
 
 /**
