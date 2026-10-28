@@ -508,7 +508,16 @@ export function buildOnboardingPayload(b, titular) {
       type: b.documentType ?? "CARTEIRA_IDENTIDADE",
       number: b.documentNumber,
       ...definedOnly({
-        issuingAgency: b.documentIssuingAgency,
+        // O guia oficial da Ether sempre mostra o exemplo combinado
+        // ("issuingAgency": "SSP/RS"), mas o formulário coleta órgão emissor e
+        // UF em campos separados (ex.: "SSP" + "MA"). Sem a UF concatenada,
+        // o valor enviado ("SSP") diverge do formato documentado — combina
+        // aqui, sem exigir mudança no formulário. Já vem com "/UF" (ex.: um
+        // reenvio de conta órfã), não duplica.
+        issuingAgency:
+          b.documentIssuingAgency && b.documentIssueState && !b.documentIssuingAgency.includes("/")
+            ? `${b.documentIssuingAgency}/${b.documentIssueState}`
+            : b.documentIssuingAgency,
         issueDate: b.documentIssueDate,
         issueState: b.documentIssueState,
       }),
