@@ -105,8 +105,14 @@ export const config = {
     secret: optional("RECAPTCHA_SECRET", ""),
   },
 
-  // E-mail transacional (redefinição de senha) via Resend.
+  // E-mail transacional (redefinição de senha). Provedor, em ordem de preferência:
+  // Amazon SES (AWS_SES_*) e, se não configurado, Resend (RESEND_API_KEY).
+  // As credenciais do SES têm nomes próprios (não AWS_ACCESS_KEY_ID) para a API
+  // nunca herdar uma credencial AWS "solta" do ambiente.
   mail: {
+    awsRegion: optional("AWS_SES_REGION", ""),
+    awsAccessKeyId: optional("AWS_SES_ACCESS_KEY_ID", ""),
+    awsSecretAccessKey: optional("AWS_SES_SECRET_ACCESS_KEY", ""),
     resendApiKey: optional("RESEND_API_KEY", ""),
     from: optional("MAIL_FROM", "LivrePay <nao-responder@livrepay.digital>"),
   },
@@ -118,8 +124,13 @@ export const config = {
 if (isProduction && !config.recaptcha.secret) {
   console.warn("RECAPTCHA_SECRET não definida em produção — login/cadastro/esqueci-a-senha sem reCAPTCHA.");
 }
-if (isProduction && !config.mail.resendApiKey) {
-  console.warn("RESEND_API_KEY não definida em produção — e-mails de redefinição de senha NÃO serão enviados.");
+export const sesConfigured = Boolean(
+  config.mail.awsRegion && config.mail.awsAccessKeyId && config.mail.awsSecretAccessKey,
+);
+if (isProduction && !sesConfigured && !config.mail.resendApiKey) {
+  console.warn(
+    "Nenhum provedor de e-mail configurado (AWS_SES_* ou RESEND_API_KEY) — e-mails de redefinição de senha NÃO serão enviados.",
+  );
 }
 
 if (isProduction && !config.redisUrl) {

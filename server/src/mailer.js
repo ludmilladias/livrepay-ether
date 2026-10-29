@@ -1,16 +1,53 @@
-import { config } from "./config.js";
+import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { config, sesConfigured } from "./config.js";
 
 const RESEND_URL = "https://api.resend.com/emails";
 const TIMEOUT_MS = 10_000;
 
-/**
- * Envia um e-mail transacional pelo Resend. Sem RESEND_API_KEY não envia (e
- * devolve false). Nunca loga destinatário, assunto nem corpo: o corpo de
- * redefinição carrega um link de uso único.
- */
-export async function sendMail({ to, subject, html, text }) {
-  if (!config.mail.resendApiKey) return false;
+let sesClient = null;
+function ses() {
+  sesClient ??= new SESv2Client({
+    region: config.mail.awsRegion,
+    credentials: {
+      accessKeyId: config.mail.awsAccessKeyId,
+      secretAccessKey: config.mail.awsSecretAccessKey,
+    },
+  });
+  return sesClient;
+}
 
+/** Só para teste: troca o cliente do SES por um falso. */
+export function setSesClientForTest(client) {
+  sesClient = client;
+}
+
+async function sendViaSes({ to, subject, html, text }) {
+  try {
+    await ses().send(
+      new SendEmailCommand({
+        FromEmailAddress: config.mail.from,
+        Destination: { ToAddresses: [to] },
+        Content: {
+          Simple: {
+            Subject: { Data: subject, Charset: "UTF-8" },
+            Body: {
+              Text: { Data: text, Charset: "UTF-8" },
+              Html: { Data: html, Charset: "UTF-8" },
+            },
+          },
+        },
+      }),
+      { abortSignal: AbortSignal.timeout(TIMEOUT_MS) },
+    );
+    return true;
+  } catch (error) {
+    // Só nome e código: a mensagem do SDK pode ecoar destinatário ou região.
+    console.error("Amazon SES recusou o envio", { name: error?.name, status: error?.$metadata?.httpStatusCode });
+    return false;
+  }
+}
+
+async function sendViaResend({ to, subject, html, text }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -34,6 +71,17 @@ export async function sendMail({ to, subject, html, text }) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Envia um e-mail transacional (Amazon SES; Resend como alternativa). Sem
+ * provedor configurado não envia e devolve false. Nunca loga destinatário,
+ * assunto nem corpo: o corpo de redefinição carrega um link de uso único.
+ */
+export async function sendMail(message) {
+  if (sesConfigured) return sendViaSes(message);
+  if (config.mail.resendApiKey) return sendViaResend(message);
+  return false;
 }
 
 /** E-mail com o link de redefinição de senha (uso único, validade curta). */

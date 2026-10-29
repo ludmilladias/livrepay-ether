@@ -16,9 +16,11 @@
     "test:webhook": "node tests/webhook-signature.test.js",
     "test:ether-events": "node tests/ether-events.test.js",
     "test:auth": "node tests/auth-hardening.test.js",
-    "test:password-reset": "node tests/password-reset.test.js"
+    "test:password-reset": "node tests/password-reset.test.js",
+    "test:mailer": "node tests/mailer-ses.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1159.0",
     "amazon-cognito-identity-js": "^6.3.20",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
