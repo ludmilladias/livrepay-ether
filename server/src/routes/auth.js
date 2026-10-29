@@ -7,6 +7,9 @@ import { authQuery, withUser } from "../db.js";
 import { sharedRateLimitStore } from "../rateLimitStore.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { createDocumentUploadRouter } from "./onboarding-documents.js";
+import crypto from "node:crypto";
+import { requireCaptcha } from "../captcha.js";
+import { sendPasswordResetEmail, sendPasswordChangedEmail } from "../mailer.js";
 import { toCitySlug } from "../cityslug.js";
 import { isValidCpf, isValidCnpj } from "../br-docs.js";
 import { errorLogFields, etherErrorFields, safeEtherCode } from "../safeLog.js";
@@ -83,6 +86,7 @@ function sessionPayload(user, access, refresh) {
 authRouter.post(
   "/register",
   loginLimiter,
+  requireCaptcha,
   validate(registration),
   asyncRoute(async (req, res) => {
     const { email, password, fullName } = req.body;
@@ -114,6 +118,7 @@ authRouter.post(
 authRouter.post(
   "/login",
   loginLimiter,
+  requireCaptcha,
   validate(credentials),
   asyncRoute(async (req, res) => {
     const { email, password } = req.body;
@@ -167,6 +172,129 @@ authRouter.post(
 
     const refresh = await issueRefreshToken(user.id, req.headers["user-agent"]);
     res.json(sessionPayload(user, signAccessToken(user.id), refresh));
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Redefinição de senha ("esqueci a senha")
+// ---------------------------------------------------------------------------
+
+const RESET_TTL_MINUTES = 30;
+const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
+
+// Dois tetos: por IP (contém abuso em massa) e por e-mail (impede encher a caixa
+// de alguém com e-mails). Ambos contam toda tentativa, existindo a conta ou não.
+const forgotIpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Muitas tentativas. Tente novamente mais tarde.", code: "RATE_LIMITED" },
+  store: sharedRateLimitStore("rl:forgot-ip:"),
+});
+const forgotEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `e:${String(req.body?.email ?? "").toLowerCase().trim().slice(0, 320)}`,
+  message: { error: "Muitas tentativas. Tente novamente mais tarde.", code: "RATE_LIMITED" },
+  store: sharedRateLimitStore("rl:forgot-email:"),
+});
+const resetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Muitas tentativas. Tente novamente em alguns minutos.", code: "RATE_LIMITED" },
+  store: sharedRateLimitStore("rl:reset-ip:"),
+});
+
+/**
+ * Cria o token de redefinição e envia o e-mail. Roda DEPOIS de a resposta sair,
+ * para o tempo da resposta não revelar se o e-mail tem conta.
+ */
+export async function issuePasswordReset(email) {
+  const { rows } = await authQuery(`select id, email from auth.users where email = $1`, [email]);
+  const user = rows[0];
+  if (!user) return false;
+
+  const token = crypto.randomBytes(32).toString("base64url");
+  // Um único link válido por vez: os anteriores ainda abertos são invalidados.
+  await authQuery(
+    `update auth.password_reset_tokens set used_at = now() where user_id = $1 and used_at is null`,
+    [user.id],
+  );
+  await authQuery(
+    `insert into auth.password_reset_tokens (user_id, token_hash, expires_at)
+     values ($1, $2, now() + ($3 || ' minutes')::interval)`,
+    [user.id, sha256(token), String(RESET_TTL_MINUTES)],
+  );
+
+  // O token vai no fragmento (#): não chega a logs de servidor nem ao Referer.
+  const link = `${config.appUrl}/redefinir-senha#token=${token}`;
+  return sendPasswordResetEmail(user.email, link, RESET_TTL_MINUTES);
+}
+
+authRouter.post(
+  "/forgot-password",
+  forgotIpLimiter,
+  requireCaptcha,
+  validate(z.object({ email: credentials.shape.email })),
+  forgotEmailLimiter,
+  (req, res) => {
+    // Resposta idêntica exista a conta ou não (sem enumeração de e-mails).
+    res.status(202).json({
+      message: "Se este e-mail tiver uma conta, enviaremos um link para redefinir a senha.",
+    });
+    issuePasswordReset(req.body.email).catch((error) => {
+      console.error("Falha ao emitir redefinição de senha", errorLogFields(error));
+    });
+  },
+);
+
+authRouter.post(
+  "/reset-password",
+  resetLimiter,
+  validate(
+    z.object({
+      token: z.string().min(20).max(200),
+      password: credentials.shape.password,
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const passwordHash = await bcrypt.hash(req.body.password, config.auth.bcryptRounds);
+
+    // Uma única instrução: consome o token (uso único, mesmo sob corrida) e troca
+    // a senha. Também destrava a conta (tentativas falhas zeradas).
+    const { rows } = await authQuery(
+      `with t as (
+         update auth.password_reset_tokens
+            set used_at = now()
+          where token_hash = $1 and used_at is null and expires_at > now()
+          returning user_id
+       )
+       update auth.users u
+          set password_hash = $2, failed_login_attempts = 0, locked_until = null, updated_at = now()
+         from t
+        where u.id = t.user_id
+        returning u.id, u.email`,
+      [sha256(req.body.token), passwordHash],
+    );
+    const user = rows[0];
+    if (!user) {
+      throw new ApiError(400, "Este link é inválido ou já expirou. Peça um novo.", "RESET_TOKEN_INVALID");
+    }
+
+    // Sessões abertas (inclusive a de quem roubou a senha) deixam de valer.
+    await revokeAllForUser(user.id);
+    await authQuery(
+      `update auth.password_reset_tokens set used_at = now() where user_id = $1 and used_at is null`,
+      [user.id],
+    );
+
+    sendPasswordChangedEmail(user.email).catch(() => {});
+    res.status(204).end();
   }),
 );
 

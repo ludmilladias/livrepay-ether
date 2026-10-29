@@ -90,7 +90,15 @@ async function parse(response: Response): Promise<unknown> {
 // Uma única renovação concorrente: se 3 requests receberem 401 ao mesmo tempo,
 // todas aguardam o mesmo refresh em vez de disparar três rotações (o que
 // invalidaria as duas últimas por detecção de reuso).
-const NO_REFRESH_PATHS = new Set(["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout", "/auth/logout-all"]);
+const NO_REFRESH_PATHS = new Set([
+  "/auth/login",
+  "/auth/register",
+  "/auth/refresh",
+  "/auth/logout",
+  "/auth/logout-all",
+  "/auth/forgot-password",
+  "/auth/reset-password",
+]);
 
 let refreshInFlight: Promise<boolean> | null = null;
 
@@ -172,20 +180,38 @@ async function request<T>(
 // --- Autenticação -----------------------------------------------------------
 
 export const auth = {
-  async register(email: string, password: string, fullName: string): Promise<Session> {
+  async register(email: string, password: string, fullName: string, captchaToken?: string | null): Promise<Session> {
     const session = await request<Session>("POST", "/auth/register", {
       email,
       password,
       fullName,
+      ...(captchaToken ? { captchaToken } : {}),
     });
     storeSession(session);
     return session;
   },
 
-  async login(email: string, password: string): Promise<Session> {
-    const session = await request<Session>("POST", "/auth/login", { email, password });
+  async login(email: string, password: string, captchaToken?: string | null): Promise<Session> {
+    const session = await request<Session>("POST", "/auth/login", {
+      email,
+      password,
+      ...(captchaToken ? { captchaToken } : {}),
+    });
     storeSession(session);
     return session;
+  },
+
+  /** Pede o e-mail de redefinição. A resposta é sempre a mesma exista a conta ou não. */
+  async forgotPassword(email: string, captchaToken?: string | null): Promise<void> {
+    await request("POST", "/auth/forgot-password", {
+      email,
+      ...(captchaToken ? { captchaToken } : {}),
+    });
+  },
+
+  /** Troca a senha com o token do e-mail (uso único). */
+  async resetPassword(token: string, password: string): Promise<void> {
+    await request("POST", "/auth/reset-password", { token, password });
   },
 
   async logout(): Promise<void> {

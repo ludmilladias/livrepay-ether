@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Building2, Eye, EyeOff, User } from "lucide-react";
 import { auth } from "@/lib/api";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Logo } from "@/components/ui/logo";
+import { Recaptcha, RECAPTCHA_SITE_KEY, type RecaptchaHandle } from "@/components/auth/recaptcha";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -40,6 +41,8 @@ export default function Auth() {
   const [fullName, setFullName] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [captcha, setCaptcha] = useState<string | null>(null);
+  const captchaRef = useRef<RecaptchaHandle>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,6 +75,7 @@ export default function Auth() {
         ? `A senha precisa ter pelo menos ${MIN_PASSWORD} caracteres.`
         : "Informe sua senha.";
     }
+    if (RECAPTCHA_SITE_KEY && !captcha) return "Confirme que você não é um robô.";
     return null;
   }
 
@@ -87,13 +91,13 @@ export default function Auth() {
 
     try {
       if (mode === "signin") {
-        await auth.login(email, password);
+        await auth.login(email, password, captcha);
         // O logout continua recarregando a página (use-auth). Aqui, sem recarga, descartamos o
         // cache de dados para que nada de uma sessão anterior apareça para esta conta.
         queryClient.clear();
         navigate(next, { replace: true });
       } else {
-        await auth.register(email, password, fullName.trim());
+        await auth.register(email, password, fullName.trim(), captcha);
         queryClient.clear();
         // Cadastro novo nunca tem KYC ainda: vai direto para a abertura de conta,
         // já com o tipo escolhido.
@@ -101,6 +105,8 @@ export default function Auth() {
       }
     } catch (error) {
       setBusy(false);
+      // O token do reCAPTCHA vale uma única verificação: pede outro.
+      captchaRef.current?.reset();
       setMessage(error instanceof Error ? error.message : "Não foi possível concluir.");
     }
   }
@@ -251,12 +257,20 @@ export default function Auth() {
                         {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </Button>
                     </div>
-                    {isSignup && (
+                    {isSignup ? (
                       <p id="password-hint" className="text-xs text-muted-foreground">
                         Mínimo de {MIN_PASSWORD} caracteres.
                       </p>
+                    ) : (
+                      <p className="text-right text-sm">
+                        <Link to="/esqueci-senha" className="text-primary underline-offset-4 hover:underline">
+                          Esqueci minha senha
+                        </Link>
+                      </p>
                     )}
                   </div>
+
+                  <Recaptcha ref={captchaRef} onChange={setCaptcha} />
 
                   {message && (
                     <p role="alert" className="text-sm text-destructive">

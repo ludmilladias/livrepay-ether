@@ -15,7 +15,8 @@
     "test:privacy": "node tests/log-privacy.test.js",
     "test:webhook": "node tests/webhook-signature.test.js",
     "test:ether-events": "node tests/ether-events.test.js",
-    "test:auth": "node tests/auth-hardening.test.js"
+    "test:auth": "node tests/auth-hardening.test.js",
+    "test:password-reset": "node tests/password-reset.test.js"
   },
   "dependencies": {
     "amazon-cognito-identity-js": "^6.3.20",

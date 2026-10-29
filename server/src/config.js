@@ -97,7 +97,30 @@ export const config = {
   // Sem isso, rate limit vira MemoryStore por instância: com 2+ réplicas atrás
   // do load balancer, cada uma conta separado e o teto deixa de valer de verdade.
   redisUrl: optional("REDIS_URL", ""),
+
+  // reCAPTCHA v2 (checkbox). Sem RECAPTCHA_SECRET a verificação é desligada (útil
+  // em dev e para ligar a chave em produção sem derrubar o login); com ele, falta
+  // ou falha do token barra a requisição.
+  recaptcha: {
+    secret: optional("RECAPTCHA_SECRET", ""),
+  },
+
+  // E-mail transacional (redefinição de senha) via Resend.
+  mail: {
+    resendApiKey: optional("RESEND_API_KEY", ""),
+    from: optional("MAIL_FROM", "LivrePay <nao-responder@livrepay.digital>"),
+  },
+
+  // URL pública do frontend: base do link de redefinição enviado por e-mail.
+  appUrl: optional("APP_URL", "https://livrepay.digital").replace(/\/+$/, ""),
 };
+
+if (isProduction && !config.recaptcha.secret) {
+  console.warn("RECAPTCHA_SECRET não definida em produção — login/cadastro/esqueci-a-senha sem reCAPTCHA.");
+}
+if (isProduction && !config.mail.resendApiKey) {
+  console.warn("RESEND_API_KEY não definida em produção — e-mails de redefinição de senha NÃO serão enviados.");
+}
 
 if (isProduction && !config.redisUrl) {
   console.warn(

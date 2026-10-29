@@ -1180,6 +1180,51 @@ begin
   raise notice 'T40 OK: admin_receivables_list() nega quem nao e admin/compliance';
 end $$;
 
+-- --- T41: tokens de redefinicao de senha ----------------------------------
+reset role;
+do $$
+declare
+  _rls boolean;
+  _denied boolean := false;
+  _uid uuid;
+  _n int;
+begin
+  select c.relrowsecurity into _rls
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'auth' and c.relname = 'password_reset_tokens';
+  if not coalesce(_rls, false) then
+    raise exception 'T41 FALHA: RLS desligada em auth.password_reset_tokens';
+  end if;
+
+  set local role authenticated;
+  begin
+    perform 1 from auth.password_reset_tokens;
+  exception when insufficient_privilege then
+    _denied := true;
+  end;
+  reset role;
+  if not _denied then
+    raise exception 'T41 FALHA: authenticated conseguiu ler auth.password_reset_tokens';
+  end if;
+  raise notice 'T41 OK: authenticated nao le tokens de redefinicao (RLS + sem grant)';
+
+  -- service_role (via API) cria e consome o token de uso unico.
+  set local role service_role;
+  insert into auth.users (email, password_hash) values ('t41-reset@example.com', 'x') returning id into _uid;
+  insert into auth.password_reset_tokens (user_id, token_hash, expires_at)
+    values (_uid, 'hash-t41', now() + interval '30 minutes');
+  update auth.password_reset_tokens set used_at = now()
+   where token_hash = 'hash-t41' and used_at is null and expires_at > now();
+  get diagnostics _n = row_count;
+  if _n <> 1 then raise exception 'T41 FALHA: primeiro uso do token deveria atualizar 1 linha, atualizou %', _n; end if;
+  update auth.password_reset_tokens set used_at = now()
+   where token_hash = 'hash-t41' and used_at is null and expires_at > now();
+  get diagnostics _n = row_count;
+  if _n <> 0 then raise exception 'T41 FALHA: token reutilizado (% linhas)', _n; end if;
+  reset role;
+  raise notice 'T41 OK: token de redefinicao e de uso unico';
+end $$;
+
 -- --- Resumo ---------------------------------------------------------------
 reset role;
 do $$
