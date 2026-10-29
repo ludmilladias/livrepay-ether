@@ -147,8 +147,8 @@ export function AppSidebar() {
 
   return (
     <Sidebar className={collapsed ? "w-16" : "w-64"} collapsible="icon">
-      <SidebarHeader className="bg-white border-b border-sidebar-border p-6">
-        <Logo size={collapsed ? "md" : "xl"} className="text-primary" />
+      <SidebarHeader className="bg-white border-b border-sidebar-border px-4 py-3">
+        <Logo size={collapsed ? "md" : "lg"} className="text-primary justify-center" />
       </SidebarHeader>
 
       <SidebarContent className="p-4 space-y-4">
