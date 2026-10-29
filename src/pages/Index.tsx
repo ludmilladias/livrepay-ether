@@ -1,35 +1,28 @@
-import { KPICards } from "@/components/dashboard/kpi-cards";
 import { QuickActions } from "@/components/dashboard/quick-actions";
 import { AlertsSection } from "@/components/dashboard/alerts-section";
 import { CashflowChart } from "@/components/dashboard/cashflow-chart";
+import { HeroBalance } from "@/components/dashboard/hero-balance";
+import { AccountProgress } from "@/components/dashboard/account-progress";
 
 const Index = () => {
   return (
-    <div className="space-y-8 max-w-7xl">
-      {/* Header */}
-      <div className="mb-10">
+    <div className="mx-auto max-w-7xl space-y-6">
+      <div>
         <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
-        <p className="text-muted-foreground mt-2">
-          Visão geral das suas operações financeiras
-        </p>
+        <p className="mt-1 text-muted-foreground">Visão geral das suas operações financeiras</p>
       </div>
 
-      {/* KPIs */}
-      <div className="mb-8">
-        <KPICards />
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <HeroBalance />
+        </div>
+        <AccountProgress />
       </div>
 
-      {/* Fluxo de caixa */}
-      <div className="mb-8">
-        <CashflowChart />
-      </div>
+      <CashflowChart />
 
-      {/* Quick Actions */}
-      <div className="mb-8">
-        <QuickActions />
-      </div>
+      <QuickActions />
 
-      {/* Alerts and Next Actions */}
       <AlertsSection />
     </div>
   );
