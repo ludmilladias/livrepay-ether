@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { CheckCircle2, Clock, FileUp, Loader2, RefreshCw, Repeat2, XCircle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -16,6 +16,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
+import { useProfile } from "@/hooks/use-profile";
+import { defaultKycDocuments } from "@/lib/kyc-default-documents";
 import { hasSupportChannel, SUPPORT_CONTACT } from "@/lib/support-contact";
 import {
   replaceErrorMessage,
@@ -54,7 +56,16 @@ function formatDateTime(iso: string): string {
 }
 
 /** Linha de documento pendente ou recusado, com seleção e envio do arquivo. */
-function UploadRow({ item, rejected }: { item: ChecklistItem; rejected: boolean }) {
+function UploadRow({
+  item,
+  rejected,
+  onUploaded,
+}: {
+  item: ChecklistItem;
+  rejected: boolean;
+  /** Avisa a tela que o envio foi aceito (usado na lista padrão, que não vem da Ether). */
+  onUploaded?: (type: string) => void;
+}) {
   const upload = useUploadDocument();
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -80,7 +91,7 @@ function UploadRow({ item, rejected }: { item: ChecklistItem; rejected: boolean 
 
   function send() {
     if (!file) return;
-    upload.mutate({ type: item.type, file });
+    upload.mutate({ type: item.type, file }, { onSuccess: () => onUploaded?.(item.type) });
   }
 
   return (
@@ -442,11 +453,64 @@ const HEADINGS: Record<Exclude<KycStage, "not_started">, { title: string; descri
  * (junto com o gate do painel, que nunca está montado ao mesmo tempo) que liga
  * a atualização automática do status.
  */
-export function KycDocuments() {
-  const { signOut } = useAuth();
-  const { stage, checklist, isFetching, isError, refetch, dataUpdatedAt } = useKycJourney({ autoRefresh: true });
+const SENT_KEY = "livrepay.kyc.sent";
 
-  if (!stage || stage === "not_started") return null;
+function readSent(): string[] {
+  try {
+    const raw = sessionStorage.getItem(SENT_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function KycDocuments({ embedded = false }: { embedded?: boolean }) {
+  const { signOut } = useAuth();
+  // Embutida no painel, não liga o polling: o gate do painel já tem o único observador com intervalo.
+  const journey = useKycJourney({ autoRefresh: !embedded });
+  const { stage, isFetching, isError, refetch, dataUpdatedAt } = journey;
+  const { data: profile } = useProfile();
+
+  // Lista padrão: plano B para quando a Ether não devolve o checklist. Como ela não diz o que já
+  // foi enviado, lembramos nesta sessão do navegador o que o próprio cliente enviou.
+  const [sentTypes, setSentTypes] = useState<string[]>(readSent);
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SENT_KEY, JSON.stringify(sentTypes));
+    } catch {
+      /* sem storage: só perde a lembrança */
+    }
+  }, [sentTypes]);
+  const markSent = (type: string) => setSentTypes((prev) => (prev.includes(type) ? prev : [...prev, type]));
+
+  if (!stage || stage === "not_started") {
+    if (!embedded) return null;
+    return (
+      <Card className="w-full max-w-2xl">
+        <CardHeader>
+          <CardTitle>Documentos</CardTitle>
+          <CardDescription>Você ainda não enviou o cadastro de abertura de conta.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild>
+            <Link to="/onboarding">Preencher cadastro</Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const defaults = defaultKycDocuments(profile?.tax_id);
+  const waitingDocs = stage === "awaiting_documents" || stage === "in_analysis" || stage === "pending_unknown";
+  const usingFallback = !journey.checklist && !!defaults && waitingDocs;
+  const checklist: DocumentChecklist | null = usingFallback
+    ? {
+        pending: defaults.filter((d) => !sentTypes.includes(d.type)),
+        uploaded: defaults.filter((d) => sentTypes.includes(d.type)),
+        rejected: [],
+      }
+    : journey.checklist;
 
   const heading = HEADINGS[stage];
   const canUpload = stage === "awaiting_documents" || stage === "in_analysis" || stage === "pending_unknown";
@@ -456,8 +520,8 @@ export function KycDocuments() {
   const autoRefreshing = stage === "in_analysis" || stage === "pending_unknown";
 
   return (
-    <div className="min-h-screen bg-background p-6 flex items-center justify-center">
-      <Card className="w-full max-w-2xl">
+    <div className={embedded ? undefined : "min-h-screen bg-background p-6 flex items-center justify-center"}>
+      <Card className={embedded ? "w-full max-w-3xl" : "w-full max-w-2xl"}>
         <CardHeader>
           <CardTitle>{heading.title}</CardTitle>
           <CardDescription>{heading.description}</CardDescription>
@@ -467,6 +531,18 @@ export function KycDocuments() {
             <p className="text-sm text-muted-foreground">
               Emissão de PIX e pagamentos só são liberados depois da aprovação da conta.
             </p>
+          )}
+
+          {usingFallback && (
+            <Alert>
+              <AlertTitle>Lista padrão de documentos</AlertTitle>
+              <AlertDescription>
+                Não conseguimos buscar no banco parceiro a lista exata do seu cadastro, então mostramos a lista
+                padrão. Se o banco pedir outro documento, ele aparece aqui assim que a consulta funcionar. Não
+                conseguimos confirmar daqui o que já foi recebido: o que você envia por esta tela fica marcado como
+                enviado.
+              </AlertDescription>
+            </Alert>
           )}
 
           {isError && (
@@ -516,7 +592,12 @@ export function KycDocuments() {
                   </h3>
                   <ul className="space-y-3">
                     {checklist.pending.map((item) => (
-                      <UploadRow key={item.type} item={item} rejected={false} />
+                      <UploadRow
+                        key={item.type}
+                        item={item}
+                        rejected={false}
+                        onUploaded={usingFallback ? markSent : undefined}
+                      />
                     ))}
                   </ul>
                 </section>
@@ -557,14 +638,16 @@ export function KycDocuments() {
               <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
               Atualizar situação
             </Button>
-            {canGoToDashboard && (
+            {canGoToDashboard && !embedded && (
               <Button asChild>
                 <Link to="/">Ir ao painel</Link>
               </Button>
             )}
-            <Button type="button" variant="ghost" onClick={() => void signOut()} className="ml-auto">
-              Sair
-            </Button>
+            {!embedded && (
+              <Button type="button" variant="ghost" onClick={() => void signOut()} className="ml-auto">
+                Sair
+              </Button>
+            )}
           </div>
           {autoRefreshing && dataUpdatedAt > 0 && (
             <p className="text-xs text-muted-foreground">

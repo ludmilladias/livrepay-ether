@@ -15,6 +15,7 @@ import NotFound from "./pages/NotFound";
 import Auth from "./pages/Auth";
 import EsqueciSenha from "./pages/EsqueciSenha";
 import RedefinirSenha from "./pages/RedefinirSenha";
+import Documentos from "./pages/Documentos";
 import Onboarding from "./pages/Onboarding";
 
 // Cobrança
@@ -120,7 +121,8 @@ const AppShell = () => (
                 <OnboardingBanner />
                 <Routes>
                   <Route path="/" element={<Index />} />
-                  
+                  <Route path="/documentos" element={<Documentos />} />
+
                   {/* Cobrança Routes */}
                   <Route path="/cobranca/links" element={<Links />} />
                   <Route path="/cobranca/boletos" element={<Boletos />} />

@@ -161,6 +161,8 @@ export function AppSidebar() {
               ...(!isStaff && stage && stage !== "approved"
                 ? [{ title: "Abertura de conta", url: "/onboarding", icon: ClipboardCheck }]
                 : []),
+              // Documentos do KYC dentro do painel (também depois da aprovação).
+              ...(!isStaff ? [{ title: "Meus documentos", url: "/documentos", icon: FileText }] : []),
             ].map((item) => (
               <SidebarMenuItem key={item.title}>
                 <SidebarMenuButton asChild className="h-10">
