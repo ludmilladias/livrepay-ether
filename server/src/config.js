@@ -114,7 +114,8 @@ export const config = {
     awsAccessKeyId: optional("AWS_SES_ACCESS_KEY_ID", ""),
     awsSecretAccessKey: optional("AWS_SES_SECRET_ACCESS_KEY", ""),
     resendApiKey: optional("RESEND_API_KEY", ""),
-    from: optional("MAIL_FROM", "LivrePay <nao-responder@livrepay.digital>"),
+    // Remetente padrão no domínio já verificado no SES (livrepay.app).
+    from: optional("MAIL_FROM", "LivrePay <naoresponder@livrepay.app>"),
   },
 
   // URL pública do frontend: base do link de redefinição enviado por e-mail.
