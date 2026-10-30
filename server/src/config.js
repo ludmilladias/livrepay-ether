@@ -85,6 +85,10 @@ export const config = {
     // ETHER_WEBHOOK_SECRET: antes disso a Ether envia sem assinatura e todo
     // webhook seria recusado.
     webhookRequireSignature: optional("ETHER_WEBHOOK_REQUIRE_SIGNATURE", "") === "1",
+    // Chave mestra (32 bytes em base64) que cifra o clientSecret de cada cliente
+    // final no cofre (vault.ether_credentials). Fica só aqui, nunca no banco.
+    // Gerar com: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+    credentialsKey: optional("ETHER_CREDENTIALS_KEY", ""),
     // Cognito: a Ether usa AWS Cognito para autenticação de sub-contas.
     // O LivrePay (participant) precisa dessas credenciais para criar/autenticar
     // usuários finais na Ether.

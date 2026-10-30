@@ -17,7 +17,8 @@
     "test:ether-events": "node tests/ether-events.test.js",
     "test:auth": "node tests/auth-hardening.test.js",
     "test:password-reset": "node tests/password-reset.test.js",
-    "test:mailer": "node tests/mailer-ses.test.js"
+    "test:mailer": "node tests/mailer-ses.test.js",
+    "test:ether-credentials": "node tests/ether-credentials.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-sesv2": "^3.1159.0",

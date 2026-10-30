@@ -1225,6 +1225,91 @@ begin
   raise notice 'T41 OK: token de redefinicao e de uso unico';
 end $$;
 
+-- --- T42: cofre de credenciais da Ether por cliente ------------------------
+reset role;
+do $$
+declare
+  _rls boolean;
+  _denied boolean := false;
+  _uid uuid;
+  _uid2 uuid;
+  _cred uuid;
+  _ok boolean;
+  _audit jsonb;
+begin
+  select c.relrowsecurity into _rls
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'vault' and c.relname = 'ether_credentials';
+  if not coalesce(_rls, false) then
+    raise exception 'T42 FALHA: RLS desligada em vault.ether_credentials';
+  end if;
+
+  set local role authenticated;
+  begin
+    perform 1 from vault.ether_credentials;
+  exception when insufficient_privilege then
+    _denied := true;
+  end;
+  reset role;
+  if not _denied then
+    raise exception 'T42 FALHA: authenticated conseguiu ler o cofre';
+  end if;
+  raise notice 'T42 OK: authenticated nao le o cofre (schema fechado + RLS)';
+
+  set local role service_role;
+  insert into auth.users (email, password_hash) values ('t42-a@example.com', 'x') returning id into _uid;
+  insert into auth.users (email, password_hash) values ('t42-b@example.com', 'x') returning id into _uid2;
+  insert into vault.ether_credentials (user_id, ether_user_id, client_id, secret_ciphertext, secret_iv, secret_tag, created_by)
+    values (_uid, 'ether-t42-a', 'client-t42-a', '', '', '', _uid) returning id into _cred;
+
+  -- Segunda credencial viva para o mesmo usuário: recusada.
+  _ok := false;
+  begin
+    insert into vault.ether_credentials (user_id, ether_user_id, client_id, secret_ciphertext, secret_iv, secret_tag)
+      values (_uid, 'ether-t42-a2', 'client-t42-a2', '', '', '');
+  exception when unique_violation then _ok := true;
+  end;
+  if not _ok then raise exception 'T42 FALHA: duas credenciais vivas para o mesmo usuario'; end if;
+
+  -- O mesmo cliente Ether ligado a outro usuário LivrePay: recusado.
+  _ok := false;
+  begin
+    insert into vault.ether_credentials (user_id, ether_user_id, client_id, secret_ciphertext, secret_iv, secret_tag)
+      values (_uid2, 'ether-t42-a', 'client-t42-x', '', '', '');
+  exception when unique_violation then _ok := true;
+  end;
+  if not _ok then raise exception 'T42 FALHA: mesmo cliente Ether ligado a dois usuarios'; end if;
+  raise notice 'T42 OK: uma credencial viva por usuario e por cliente Ether';
+
+  -- Segredo imutável.
+  _ok := false;
+  begin
+    update vault.ether_credentials set secret_ciphertext = '	' where id = _cred;
+  exception when others then _ok := true;
+  end;
+  if not _ok then raise exception 'T42 FALHA: segredo da credencial foi alterado'; end if;
+
+  -- Revogar funciona; reativar não.
+  update vault.ether_credentials set status = 'revoked', revoked_at = now() where id = _cred;
+  _ok := false;
+  begin
+    update vault.ether_credentials set status = 'active', revoked_at = null where id = _cred;
+  exception when others then _ok := true;
+  end;
+  if not _ok then raise exception 'T42 FALHA: credencial revogada foi reativada'; end if;
+  reset role;
+  raise notice 'T42 OK: segredo imutavel e credencial revogada nao volta';
+
+  select new_data into _audit from public.audit_log
+   where table_name = 'vault.ether_credentials' and record_id = _cred
+   order by created_at desc limit 1;
+  if _audit is null then raise exception 'T42 FALHA: sem registro de auditoria'; end if;
+  if _audit ?| array['secret_ciphertext', 'secret_iv', 'secret_tag'] then
+    raise exception 'T42 FALHA: auditoria gravou dado do segredo';
+  end if;
+  raise notice 'T42 OK: auditoria registra a credencial sem o segredo';
+end $$;
+
 -- --- Resumo ---------------------------------------------------------------
 reset role;
 do $$

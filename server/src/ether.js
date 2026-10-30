@@ -61,34 +61,37 @@ async function fetchWithTimeout(url, options) {
 // Participant (conta principal do LivrePay na Ether)
 // ---------------------------------------------------------------------------
 
-async function getParticipantToken() {
-  // Margem de 60s: evita usar token que expira no meio da chamada.
-  if (cachedParticipantToken && cachedParticipantToken.expiresAt > Date.now() + 60_000) {
-    return cachedParticipantToken.token;
-  }
-  assertConfigured();
-
-  // Único fluxo documentado na spec (POST /auth/authenticate, clientId+clientSecret).
-  // O suporte confirmou (2026-09-04) que o 401 nos endpoints protegidos é rejeição
-  // do token por aud/App Client mal configurado no participant — pendência da Ether.
+/**
+ * POST /auth/authenticate com um par clientId/clientSecret. É o MESMO endpoint
+ * para o tenant (credencial de integração da LivrePay) e para cada cliente final
+ * (credencial de escopo de usuário gerada pela Ether). Quem decide qual conta o
+ * token opera é a credencial, não um parâmetro (suporte da Ether, 2026-10-30).
+ * Devolve { token, expiresAt }. Nunca loga o corpo (contém o secret).
+ */
+export async function authenticateClient(clientId, clientSecret) {
   const response = await fetchWithTimeout(`${config.ether.baseUrl}/auth/authenticate`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": CLIENT_USER_AGENT },
-    body: JSON.stringify({
-      clientId: config.ether.clientId,
-      clientSecret: config.ether.clientSecret,
-    }),
+    body: JSON.stringify({ clientId, clientSecret }),
   });
 
   const body = await response.json().catch(() => null);
   if (!response.ok || !body?.access_token) {
     throw new EtherError(response.status, body);
   }
-
-  cachedParticipantToken = {
+  return {
     token: body.access_token,
     expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000,
   };
+}
+
+async function getParticipantToken() {
+  // Margem de 60s: evita usar token que expira no meio da chamada.
+  if (cachedParticipantToken && cachedParticipantToken.expiresAt > Date.now() + 60_000) {
+    return cachedParticipantToken.token;
+  }
+  assertConfigured();
+  cachedParticipantToken = await authenticateClient(config.ether.clientId, config.ether.clientSecret);
   return cachedParticipantToken.token;
 }
 
