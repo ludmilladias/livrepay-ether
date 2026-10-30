@@ -80,6 +80,11 @@ export const config = {
     // headers customizados. Validado em tempo constante, como camada
     // adicional à assinatura HMAC (quando presente).
     webhookUrlToken: optional("ETHER_WEBHOOK_URL_TOKEN", ""),
+    // "1" = exige assinatura (x-ether-signature) também na rota com token na URL.
+    // Ligar SÓ depois de gerar o segredo no painel da Ether e copiá-lo para
+    // ETHER_WEBHOOK_SECRET: antes disso a Ether envia sem assinatura e todo
+    // webhook seria recusado.
+    webhookRequireSignature: optional("ETHER_WEBHOOK_REQUIRE_SIGNATURE", "") === "1",
     // Cognito: a Ether usa AWS Cognito para autenticação de sub-contas.
     // O LivrePay (participant) precisa dessas credenciais para criar/autenticar
     // usuários finais na Ether.

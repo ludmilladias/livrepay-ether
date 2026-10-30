@@ -816,6 +816,35 @@ essa rota — próximo passo é confirmar quando o primeiro webhook real (depós
 confirmação de saque) chegar e é processado corretamente (`provider_events` com
 `provider='ether'`).
 
+### 2026-10-30 — respostas do suporte da Ether (fecham as dúvidas de subconta)
+
+- **Token por cliente:** cada cliente final precisa de credencial própria (clientId +
+  clientSecret, escopo de usuário). Não é login do Cognito. A Ether gera quando enviamos o
+  `userId` do cliente (uma credencial ativa por vez). Com ela, `POST /auth/authenticate`
+  dá um token que opera só a conta do cliente. A credencial do tenant opera só a conta do
+  tenant. Isso é o que falta para religar `/charges/:id/emit` e `executePaymentForUser`
+  sem conta pool. **Pendente:** desenhar onde e como guardar essas credenciais (segredo de
+  cliente, cifrado, só service_role) antes de pedir a primeira à Ether.
+- **`AUTH_KEY_001`:** credencial não aceita como ativa, não falta de permissão. A Ether
+  pede o clientId e o horário das chamadas para investigar.
+- **Pix em conta NOMINAL:** receber por `POST /pix/deposit`. `/pix/keys` é de conta Cripto
+  (Ether vai confirmar se há chave a cadastrar no nosso caso).
+- **ID do backoffice:** o `{id}` de `/customers/{id}` é o `userId` da API. Base para o
+  vínculo usuário LivrePay ↔ cliente Ether (conferir por `GET /users/account/profile/{userId}`).
+- **Webhook:** cabeçalhos `x-ether-timestamp` (ms) e `x-ether-signature: sha256=<hex>`,
+  HMAC-SHA256 de `timestamp + "." + corpo bruto`. Código ajustado em
+  `server/src/routes/webhook.js` (o formato `t=/v1=` anterior era suposição). Para ativar:
+  gerar o segredo no painel da Ether, copiar para `ETHER_WEBHOOK_SECRET` e só então ligar
+  `ETHER_WEBHOOK_REQUIRE_SIGNATURE=1`. Hoje o `ETHER_WEBHOOK_SECRET` de produção NÃO é o
+  segredo da Ether.
+- **`pix.deposit.reversed`:** Pix recebido devolvido ao pagador (status REFUNDED), payload
+  igual aos outros eventos Pix. **Não tratado ainda** — exige função SQL de estorno.
+- **`/pix/deposit`:** host `api.etherglobalassets.com.br` (o `.com` da doc é erro);
+  `expirationTime` (segundos) e `idempotencyKey` (alfanumérico, máx 25) são aceitos. Nosso
+  código já está certo.
+- **`/exchange/send`:** `amount` na menor unidade, string sem decimais; rede `Ethereum` ou
+  `ERC20` (não `ETH`). Não usamos esse endpoint hoje.
+
 ---
 
 ## 2. Módulos com dado 100% fictício (maior pendência restante)

@@ -144,12 +144,14 @@ export async function runProviderEvent(storedId, { eventType, payload, eventId }
 /**
  * Webhook da Ether. Rota pública (o provedor não tem JWT de usuário).
  *
- * Validação HMAC-SHA256:
- *  - Header: X-Signature no formato "t=<timestamp>,v1=<hex_digest>"
- *  - Assinatura: HMAC-SHA256(secret, "<timestamp>.<rawBody>"), rawBody = bytes
- *    recebidos (req.rawBody), nunca o JSON re-serializado.
- *  - Replay: timestamps com mais de 5 minutos (ou mais de 60s no futuro) são rejeitados.
- *  - Comparação em tempo constante para evitar timing attacks.
+ * Assinatura (formato confirmado pelo suporte da Ether em 2026-10-30):
+ *  - x-ether-timestamp: momento do envio, em MILISSEGUNDOS.
+ *  - x-ether-signature: "sha256=<hex>".
+ *  - hex = HMAC-SHA256(segredo do webhook, `${timestamp}.${corpoBruto}`), sobre os
+ *    bytes recebidos (req.rawBody), nunca o JSON re-serializado.
+ *  - Replay: rejeitamos timestamp com mais de 5 minutos no passado ou mais de 60s
+ *    no futuro (recomendação da Ether: recusar notificação muito antiga).
+ *  - Comparação em tempo constante.
  *
  * Garantias:
  *  - Persistimos o payload ANTES de processar: se o processamento falhar, o
@@ -157,35 +159,24 @@ export async function runProviderEvent(storedId, { eventType, payload, eventId }
  *  - Idempotência por (provider, event_id) UNIQUE: reentrega não credita 2x.
  */
 /**
- * Valida a assinatura HMAC (X-Signature) ou, na ausência dela, o segredo
+ * Valida a assinatura HMAC (x-ether-signature) ou, na ausência dela, o segredo
  * legado por header. Retorna null se válido, ou a resposta de erro a enviar.
  */
 function validateSignature(req) {
-  const signatureHeader = req.get("x-signature");
+  const signatureHeader = req.get("x-ether-signature");
   if (signatureHeader) {
-    // HMAC-SHA256: valida assinatura e protege contra replay.
-    const parts = {};
-    for (const pair of signatureHeader.split(",")) {
-      const [key, value] = pair.split("=", 2);
-      if (key && value) parts[key.trim()] = value.trim();
-    }
-
-    const timestamp = parts.t;
-    const signature = parts.v1;
-
-    if (!timestamp || !signature) {
+    const timestamp = req.get("x-ether-timestamp");
+    const match = /^sha256=([0-9a-f]{64})$/i.exec(signatureHeader.trim());
+    if (!timestamp || !match) {
       return { status: 401, body: { error: "assinatura malformada" } };
     }
 
-    // Replay protection: rejeita eventos com mais de 5 minutos no passado. No
-    // futuro só toleramos um pequeno desvio de relógio (antes, Math.abs aceitava
-    // evento datado até 5 minutos adiante).
-    const ts = Number(timestamp);
-    if (!Number.isFinite(ts)) {
+    const tsMs = Number(timestamp);
+    if (!Number.isFinite(tsMs)) {
       return { status: 401, body: { error: "assinatura malformada" } };
     }
-    const age = Date.now() / 1000 - ts;
-    if (age > MAX_AGE_SECONDS || age < -MAX_FUTURE_SKEW_SECONDS) {
+    const ageSeconds = (Date.now() - tsMs) / 1000;
+    if (ageSeconds > MAX_AGE_SECONDS || ageSeconds < -MAX_FUTURE_SKEW_SECONDS) {
       return { status: 401, body: { error: "assinatura expirada" } };
     }
 
@@ -201,7 +192,7 @@ function validateSignature(req) {
       .update(raw)
       .digest("hex");
 
-    if (!safeEqual(signature, expected)) {
+    if (!safeEqual(match[1].toLowerCase(), expected)) {
       return { status: 401, body: { error: "assinatura inválida" } };
     }
     return null;
@@ -269,8 +260,8 @@ webhookRouter.post(
 /**
  * Rota alternativa com token no path — usada quando o painel da Ether só
  * permite cadastrar uma URL de callback, sem headers customizados. O token
- * é validado em tempo constante; a assinatura HMAC (se enviada) continua
- * validada como camada adicional.
+ * é validado em tempo constante. A assinatura HMAC (x-ether-signature), quando
+ * enviada, é validada; com ETHER_WEBHOOK_REQUIRE_SIGNATURE=1 ela é exigida.
  */
 webhookRouter.post(
   "/ether/:token",
@@ -283,10 +274,15 @@ webhookRouter.post(
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    // Se a Ether também enviar X-Signature, valida como camada adicional.
-    if (req.get("x-signature") && config.ether.webhookSecret) {
+    // Assinatura enviada: valida (com o segredo configurado). Sem assinatura:
+    // aceita só pelo token, a menos que ETHER_WEBHOOK_REQUIRE_SIGNATURE=1.
+    // Ordem segura de ativação: gerar o segredo no painel da Ether, copiar para
+    // ETHER_WEBHOOK_SECRET, e só então ligar a exigência.
+    if (req.get("x-ether-signature") && config.ether.webhookSecret) {
       const invalid = validateSignature(req);
       if (invalid) return res.status(invalid.status).json(invalid.body);
+    } else if (config.ether.webhookRequireSignature) {
+      return res.status(401).json({ error: "assinatura ausente" });
     }
 
     return handleEtherWebhook(req, res);

@@ -62,10 +62,16 @@ function c(label, cond, detail) {
   if (!cond) FAIL++;
 }
 
-const now = () => Math.floor(Date.now() / 1000);
+// Formato real da Ether (suporte, 2026-10-30): x-ether-timestamp em MILISSEGUNDOS
+// e x-ether-signature "sha256=<hex>", HMAC-SHA256 de `${timestamp}.${corpoBruto}`.
+const now = () => Date.now();
+const SEC = 1000;
 const sign = (ts, raw, secret = SECRET) =>
   crypto.createHmac("sha256", secret).update(`${ts}.${raw}`).digest("hex");
-const sigHeader = (ts, raw, secret) => `t=${ts},v1=${sign(ts, raw, secret)}`;
+const sigHeaders = (ts, raw, secret) => ({
+  "x-ether-timestamp": String(ts),
+  "x-ether-signature": `sha256=${sign(ts, raw, secret)}`,
+});
 
 async function post(path, raw, headers = {}, contentType = "application/json") {
   const res = await fetch(`${base}${path}`, {
@@ -89,60 +95,70 @@ let id = event();
 let raw = rawSpaced(id);
 let ts = now();
 c("pré-condição: corpo cru difere do re-serializado", raw !== JSON.stringify(JSON.parse(raw)));
-let r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(ts, raw) });
+let r = await post("/webhooks/ether", raw, sigHeaders(ts, raw));
 c("assinatura sobre o corpo CRU confere -> 200 ok", r.status === 200 && r.json.status === "ok", JSON.stringify(r));
 
 // 2) Assinatura sobre o corpo re-serializado NÃO confere.
 id = event();
 raw = rawSpaced(id);
 const reserialized = JSON.stringify(JSON.parse(raw));
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(ts, reserialized) });
+r = await post("/webhooks/ether", raw, sigHeaders(ts, reserialized));
 c("assinatura sobre o corpo RE-SERIALIZADO -> 401", r.status === 401 && r.json.error === "assinatura inválida", JSON.stringify(r));
 c("evento rejeitado não foi gravado", !seen.has(`ether:${id}`));
 
 // 3) Corpo compacto idêntico ao re-serializado também funciona (caso comum).
 id = event();
 raw = JSON.stringify({ id, eventType: "pix.created", data: { data: {} } });
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(ts, raw) });
+r = await post("/webhooks/ether", raw, sigHeaders(ts, raw));
 c("corpo compacto assinado -> 200", r.status === 200 && r.json.status === "ok", JSON.stringify(r));
 
 // 4) Corpo adulterado após assinar, e segredo errado.
 id = event();
 raw = rawSpaced(id);
-r = await post("/webhooks/ether", raw.replace("pagamento", "pagamentX"), { "X-Signature": sigHeader(ts, raw) });
+r = await post("/webhooks/ether", raw.replace("pagamento", "pagamentX"), sigHeaders(ts, raw));
 c("corpo adulterado após assinar -> 401", r.status === 401, JSON.stringify(r));
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(ts, raw, "outro-segredo") });
+r = await post("/webhooks/ether", raw, sigHeaders(ts, raw, "outro-segredo"));
 c("assinatura com segredo errado -> 401", r.status === 401, JSON.stringify(r));
 
 // 5) Janela de timestamp.
 id = event(); raw = rawSpaced(id);
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now() - 600, raw) });
+r = await post("/webhooks/ether", raw, sigHeaders(now() - 600 * SEC, raw));
 c("timestamp 10 min no passado -> 401 expirada", r.status === 401 && r.json.error === "assinatura expirada", JSON.stringify(r));
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now() + 300, raw) });
+r = await post("/webhooks/ether", raw, sigHeaders(now() + 300 * SEC, raw));
 c("timestamp 5 min NO FUTURO -> 401 expirada (antes passava por Math.abs)", r.status === 401 && r.json.error === "assinatura expirada", JSON.stringify(r));
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now() + 3600, raw) });
+r = await post("/webhooks/ether", raw, sigHeaders(now() + 3600 * SEC, raw));
 c("timestamp 1h no futuro -> 401", r.status === 401, JSON.stringify(r));
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now() + 30, raw) });
+r = await post("/webhooks/ether", raw, sigHeaders(now() + 30 * SEC, raw));
 c("desvio de relógio pequeno (+30s) é tolerado -> 200", r.status === 200, JSON.stringify(r));
 id = event(); raw = rawSpaced(id);
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now() - 200, raw) });
+r = await post("/webhooks/ether", raw, sigHeaders(now() - 200 * SEC, raw));
 c("200s no passado (dentro de 5 min) -> 200", r.status === 200, JSON.stringify(r));
 id = event(); raw = rawSpaced(id);
-r = await post("/webhooks/ether", raw, { "X-Signature": `t=abc,v1=${sign("abc", raw)}` });
+r = await post("/webhooks/ether", raw, { "x-ether-timestamp": "abc", "x-ether-signature": `sha256=${sign("abc", raw)}` });
 c("timestamp não numérico -> 401", r.status === 401, JSON.stringify(r));
-r = await post("/webhooks/ether", raw, { "X-Signature": "lixo" });
+r = await post("/webhooks/ether", raw, { "x-ether-timestamp": String(now()), "x-ether-signature": "lixo" });
 c("cabeçalho malformado -> 401", r.status === 401, JSON.stringify(r));
+
+id = event(); raw = rawSpaced(id);
+let tsUp = now();
+r = await post("/webhooks/ether", raw, { "x-ether-timestamp": String(tsUp), "x-ether-signature": `sha256=${sign(tsUp, raw).toUpperCase()}` });
+c("hex em maiúsculas é aceito -> 200", r.status === 200, JSON.stringify(r));
+id = event(); raw = rawSpaced(id);
+r = await post("/webhooks/ether", raw, { "x-ether-signature": `sha256=${sign(now(), raw)}` });
+c("assinatura sem x-ether-timestamp -> 401", r.status === 401, JSON.stringify(r));
+r = await post("/webhooks/ether", raw, { "X-Signature": `t=${now()},v1=${sign(now(), raw)}` });
+c("formato antigo t=/v1= não é aceito -> 401", r.status === 401, JSON.stringify(r));
 
 // 6) Falha fechada sem corpo cru (Content-Type que o express.json não lê).
 id = event(); raw = rawSpaced(id);
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now(), raw) }, "text/plain");
+r = await post("/webhooks/ether", raw, sigHeaders(now(), raw), "text/plain");
 c("sem buffer cru (não-JSON) -> 401, nunca 500", r.status === 401, JSON.stringify(r));
 
 // 7) Idempotência continua valendo: reentrega do mesmo evento assinado.
 id = event(); raw = rawSpaced(id);
 const before = inserts;
-r = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now(), raw) });
-const again = await post("/webhooks/ether", raw, { "X-Signature": sigHeader(now(), raw) });
+r = await post("/webhooks/ether", raw, sigHeaders(now(), raw));
+const again = await post("/webhooks/ether", raw, sigHeaders(now(), raw));
 c("reentrega do mesmo event_id -> 200 duplicate_ignored, 1 só gravação",
   r.json.status === "ok" && again.status === 200 && again.json.status === "duplicate_ignored" && inserts === before + 1,
   JSON.stringify({ r, again }));
@@ -150,13 +166,19 @@ c("reentrega do mesmo event_id -> 200 duplicate_ignored, 1 só gravação",
 // 8) Rota com token na URL e caminho legado por header.
 id = event(); raw = rawSpaced(id);
 r = await post(`/webhooks/ether/${URL_TOKEN}`, raw);
-c("rota /ether/:token sem X-Signature -> 200", r.status === 200 && r.json.status === "ok", JSON.stringify(r));
+c("rota /ether/:token sem assinatura, exigência DESLIGADA (padrão) -> 200", r.status === 200 && r.json.status === "ok", JSON.stringify(r));
+const { config } = await import("../src/config.js");
+config.ether.webhookRequireSignature = true;
 id = event(); raw = rawSpaced(id);
-r = await post(`/webhooks/ether/${URL_TOKEN}`, raw, { "X-Signature": sigHeader(now(), raw) });
-c("rota /ether/:token com X-Signature válida sobre corpo cru -> 200", r.status === 200, JSON.stringify(r));
+r = await post(`/webhooks/ether/${URL_TOKEN}`, raw);
+c("rota /ether/:token sem assinatura, exigência LIGADA -> 401", r.status === 401 && r.json.error === "assinatura ausente", JSON.stringify(r));
+c("evento sem assinatura não foi gravado", !seen.has(`ether:${id}`));
 id = event(); raw = rawSpaced(id);
-r = await post(`/webhooks/ether/${URL_TOKEN}`, raw, { "X-Signature": sigHeader(now(), JSON.stringify(JSON.parse(raw))) });
-c("rota /ether/:token com X-Signature sobre re-serializado -> 401", r.status === 401, JSON.stringify(r));
+r = await post(`/webhooks/ether/${URL_TOKEN}`, raw, sigHeaders(now(), raw));
+c("rota /ether/:token com assinatura válida sobre corpo cru -> 200", r.status === 200, JSON.stringify(r));
+id = event(); raw = rawSpaced(id);
+r = await post(`/webhooks/ether/${URL_TOKEN}`, raw, sigHeaders(now(), JSON.stringify(JSON.parse(raw))));
+c("rota /ether/:token com assinatura sobre re-serializado -> 401", r.status === 401, JSON.stringify(r));
 r = await post("/webhooks/ether/token-errado", raw);
 c("token de URL errado -> 401", r.status === 401, JSON.stringify(r));
 id = event(); raw = rawSpaced(id);
