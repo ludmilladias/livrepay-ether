@@ -358,6 +358,15 @@ export function listPixKeys(subAccountToken = null) {
   return call("GET", "/pix/keys", undefined, true, subAccountToken);
 }
 
+/**
+ * Dados da conta do DONO do token (GET /users/bank-account/details). Com o token
+ * de uma credencial de cliente, responde quem é esse cliente: usado para conferir
+ * a credencial antes de guardá-la no cofre.
+ */
+export function getBankAccountDetails(token) {
+  return call("GET", "/users/bank-account/details", undefined, false, token);
+}
+
 /** Consulta saldo da conta. */
 export function getAccountBalance(subAccountToken = null) {
   return call("GET", "/account-balance", undefined, true, subAccountToken);

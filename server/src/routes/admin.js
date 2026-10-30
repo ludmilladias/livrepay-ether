@@ -1,8 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
-import { withUser } from "../db.js";
+import { withService, withUser } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, requireRole, validate } from "../middleware.js";
 import { runProviderEvent } from "./webhook.js";
+import { authenticateClient, EtherError, getBankAccountDetails } from "../ether.js";
+import { revokeCredential, storeCredential } from "../etherCredentials.js";
 
 export const adminRouter = Router();
 
@@ -230,6 +232,140 @@ adminRouter.delete(
         parsed.data,
       ]);
     });
+    res.status(204).end();
+  }),
+);
+
+// --- Credenciais da Ether por cliente ----------------------------------------
+//
+// A Ether gera um clientId/clientSecret por cliente final (a partir do userId
+// dele) e entrega por canal seguro. Um ADMIN cola o par aqui; o servidor confere
+// com a PRÓPRIA credencial de quem ela é, e só então cifra e guarda no cofre.
+// O segredo nunca volta em resposta, nem em log.
+//
+// withService aqui é deliberado: é ação de admin (requireRole("admin"), checado
+// no banco) que precisa ler o perfil de OUTRO usuário e escrever no cofre, que só
+// service_role alcança. Nunca é usado para servir dado ao próprio requisitante.
+
+const onlyDigits = (v) => String(v ?? "").replace(/\D/g, "");
+
+const credentialBody = z.object({
+  etherUserId: z.string().trim().uuid("userId da Ether inválido (copie o ID da URL do cliente no backoffice)"),
+  clientId: z.string().trim().min(4).max(200),
+  clientSecret: z.string().min(8).max(500),
+});
+
+adminRouter.get(
+  "/ether-credentials",
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const rows = await withService(async (client) => {
+      const result = await client.query(
+        `select c.user_id, c.ether_user_id, c.client_id, c.status, c.created_at, c.revoked_at
+           from vault.ether_credentials c
+          where c.status <> 'revoked'
+          order by c.created_at desc`,
+      );
+      return result.rows;
+    });
+    res.json(rows);
+  }),
+);
+
+adminRouter.post(
+  "/users/:id/ether-credential",
+  requireRole("admin"),
+  validate(credentialBody),
+  asyncRoute(async (req, res) => {
+    const targetUserId = req.params.id;
+    const { etherUserId, clientId, clientSecret } = req.body;
+
+    const profile = await withService(async (client) => {
+      const { rows } = await client.query(
+        `select id, tax_id, ether_user_id from public.profiles where id = $1`,
+        [targetUserId],
+      );
+      return rows[0];
+    });
+    if (!profile) throw new ApiError(404, "Usuário não encontrado");
+    if (profile.ether_user_id && profile.ether_user_id !== etherUserId) {
+      throw new ApiError(
+        409,
+        "Este usuário já está ligado a outro cliente da Ether. Confira o ID antes de continuar.",
+        "ETHER_USER_MISMATCH",
+      );
+    }
+
+    // Prova de posse: autentica com a credencial recebida e pergunta de quem é a conta.
+    let details;
+    try {
+      const auth = await authenticateClient(clientId, clientSecret);
+      details = await getBankAccountDetails(auth.token);
+    } catch (error) {
+      console.error("Credencial de cliente não validou na Ether", {
+        targetUserId,
+        status: error instanceof EtherError ? error.status : undefined,
+      });
+      throw new ApiError(
+        422,
+        "A Ether não aceitou esta credencial. Confira o clientId e o clientSecret recebidos.",
+        "ETHER_CREDENTIAL_INVALID",
+      );
+    }
+
+    const etherUser = details?.user ?? {};
+    if (etherUser.id !== etherUserId) {
+      throw new ApiError(
+        422,
+        "Esta credencial pertence a outro cliente da Ether, não ao ID informado.",
+        "ETHER_CREDENTIAL_OWNER_MISMATCH",
+      );
+    }
+    const etherTaxId = onlyDigits(etherUser.userProfiles?.[0]?.taxId);
+    const localTaxId = onlyDigits(profile.tax_id);
+    if (localTaxId && etherTaxId && localTaxId !== etherTaxId) {
+      throw new ApiError(
+        422,
+        "O CPF/CNPJ do cliente na Ether não bate com o do usuário na LivrePay.",
+        "ETHER_CREDENTIAL_TAXID_MISMATCH",
+      );
+    }
+
+    const saved = await storeCredential({
+      userId: targetUserId,
+      etherUserId,
+      clientId,
+      clientSecret,
+      actorId: req.userId,
+    });
+
+    // Vínculo do perfil (se ainda não existia). ether_* só service_role escreve.
+    if (!profile.ether_user_id) {
+      await withService(async (client) => {
+        await client.query(
+          `update public.profiles set ether_user_id = $2 where id = $1 and ether_user_id is null`,
+          [targetUserId, etherUserId],
+        );
+      });
+    }
+
+    console.log("ether_credential_stored", { targetUserId, etherUserId, actorId: req.userId });
+    res.status(201).json({
+      user_id: saved.user_id,
+      ether_user_id: saved.ether_user_id,
+      client_id: saved.client_id,
+      status: saved.status,
+      created_at: saved.created_at,
+    });
+  }),
+);
+
+adminRouter.post(
+  "/users/:id/ether-credential/revoke",
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    await revokeCredential(req.params.id);
+    console.log("ether_credential_revoked", { targetUserId: req.params.id, actorId: req.userId });
     res.status(204).end();
   }),
 );

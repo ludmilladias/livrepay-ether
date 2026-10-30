@@ -72,6 +72,7 @@ import VerificacaoRecebiveis from "./pages/admin/VerificacaoRecebiveis";
 import EventosProvedor from "./pages/admin/EventosProvedor";
 import Auditoria from "./pages/admin/Auditoria";
 import Usuarios from "./pages/admin/Usuarios";
+import CredenciaisEther from "./pages/admin/CredenciaisEther";
 
 const queryClient = new QueryClient();
 
@@ -193,6 +194,14 @@ const AppShell = () => (
                     element={
                       <RequireRole roles={["admin"]}>
                         <Usuarios />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/admin/credenciais-ether"
+                    element={
+                      <RequireRole roles={["admin"]}>
+                        <CredenciaisEther />
                       </RequireRole>
                     }
                   />

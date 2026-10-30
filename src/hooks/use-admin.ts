@@ -162,3 +162,53 @@ export function useRemoveRole() {
     },
   });
 }
+
+// --- Credenciais da Ether por cliente --------------------------------------------
+
+/** Só metadados: o servidor nunca devolve o clientSecret. */
+export interface EtherCredential {
+  user_id: string;
+  ether_user_id: string;
+  client_id: string;
+  status: "active" | "suspect";
+  created_at: string;
+}
+
+const etherCredentialsKey = ["admin", "ether-credentials"] as const;
+
+export function useEtherCredentials() {
+  return useQuery({
+    queryKey: etherCredentialsKey,
+    queryFn: () => api.get<EtherCredential[]>("/admin/ether-credentials"),
+  });
+}
+
+export function useStoreEtherCredential() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      userId,
+      etherUserId,
+      clientId,
+      clientSecret,
+    }: {
+      userId: string;
+      etherUserId: string;
+      clientId: string;
+      clientSecret: string;
+    }) => api.post(`/admin/users/${userId}/ether-credential`, { etherUserId, clientId, clientSecret }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: etherCredentialsKey });
+    },
+  });
+}
+
+export function useRevokeEtherCredential() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.post(`/admin/users/${userId}/ether-credential/revoke`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: etherCredentialsKey });
+    },
+  });
+}

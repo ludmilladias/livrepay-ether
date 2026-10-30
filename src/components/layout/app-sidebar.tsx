@@ -123,7 +123,11 @@ export function AppSidebar() {
     title: "Administração",
     icon: ShieldCheck,
     items: isAdmin
-      ? [...adminItems, { title: "Usuários & Papéis", url: "/admin/usuarios" }]
+      ? [
+          ...adminItems,
+          { title: "Usuários & Papéis", url: "/admin/usuarios" },
+          { title: "Credenciais da Ether", url: "/admin/credenciais-ether" },
+        ]
       : adminItems,
   }
 
