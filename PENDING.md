@@ -862,9 +862,14 @@ O JWT do tenant tem `scope=https://api.etherprivatebank.com.br/tenant` e `sub=cl
 R$ 0,90 estão no extrato do cliente `e9c48093-25e8-4676-9956-a84cdd7b393a`
 (jandir@livrepay.app, o mesmo login do backoffice do tenant).
 
-**Enviado ao suporte da Ether (2026-10-31), aguardando:** credencial de usuário para o
-`userId` `e9c48093…`; API para gerar credencial de cliente (sem entrega manual); significado
-de `PIX_USR_002`/`USR_VAL_008`; se dá para operar vários clientes numa conta só.
+**Enviado ao suporte da Ether (2026-10-31):** credencial de usuário para o `userId`
+`e9c48093…`; API para gerar credencial de cliente (sem entrega manual); significado de
+`PIX_USR_002`/`USR_VAL_008`; se dá para operar vários clientes numa conta só.
+**Respondido (parcial):** não existe API de geração de credencial com a credencial do
+tenant; a Ether gera cliente a cliente, manualmente; o `clientSecret` aparece uma única vez na
+geração (se perder, gera outra); aceitam `userId`s em lote conforme as contas ativam; levaram a
+API ao time de produto, sem prazo. **Ainda sem resposta:** a credencial do `userId`
+`e9c48093…`, o significado de `PIX_USR_002`/`USR_VAL_008` e conta única × individual.
 
 **Quando a Ether responder:** (1) conta da casa → variáveis `ETHER_HOUSE_CLIENT_ID` e
 `ETHER_HOUSE_CLIENT_SECRET` no servidor e o operador da casa autentica com elas (hoje usa o
