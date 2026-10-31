@@ -96,11 +96,13 @@ async function getParticipantToken() {
 }
 
 /**
- * Token do tenant (opera SOMENTE a conta da própria LivrePay). Quem chama já
- * decidiu que o usuário pode operar essa conta — ver getUserEtherToken().
+ * Saldo (em reais) da conta de um cliente do tenant, SOMENTE leitura, com a credencial
+ * do tenant: GET /account-balance/{userId}. A Ether citou esta chamada no suporte
+ * (2026-10-31); ela não está nas docs, então o formato é conferido por quem usa.
+ * A credencial do tenant NUNCA opera dinheiro: Pix e boleto exigem a do usuário.
  */
-export function getTenantToken() {
-  return getParticipantToken();
+export function getClientBalanceAsTenant(etherUserId) {
+  return call("GET", `/account-balance/${encodeURIComponent(etherUserId)}`);
 }
 
 /**

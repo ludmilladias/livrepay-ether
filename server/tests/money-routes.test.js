@@ -14,6 +14,8 @@ process.env.PGUSER = "test";
 process.env.PGPASSWORD = "test";
 process.env.ETHER_CREDENTIALS_KEY = crypto.randomBytes(32).toString("base64");
 process.env.ETHER_HOUSE_USER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+process.env.ETHER_HOUSE_CLIENT_ID = "house-user-client-id";
+process.env.ETHER_HOUSE_CLIENT_SECRET = "house-user-secret-nao-vazar";
 
 import express from "express";
 
@@ -114,7 +116,8 @@ globalThis.fetch = async (url, options = {}) => {
   const auth = options.headers?.Authorization;
   etherCalls.push({ path: u.replace("https://ether.invalid", ""), auth, body: options.body });
   if (u.endsWith("/auth/authenticate")) {
-    return new Response(JSON.stringify({ access_token: "tok-tenant", expires_in: 3600 }), { status: 200 });
+    const { clientId } = JSON.parse(options.body);
+    return new Response(JSON.stringify({ access_token: clientId === "house-user-client-id" ? "tok-house" : "tok-tenant", expires_in: 3600 }), { status: 200 });
   }
   if (u.endsWith("/pix/deposit")) {
     await new Promise((r) => setTimeout(r, 30)); // deixa emissões concorrentes se cruzarem
@@ -163,11 +166,12 @@ check("id malformado -> 404 (não 500)", r.status === 404, r.text);
 r = await post(`/charges/${chargeCliente}/emit`, CLIENTE);
 check("cliente sem conta habilitada -> 403 ACCOUNT_NOT_ENABLED", r.status === 403 && r.json?.code === "ACCOUNT_NOT_ENABLED", r.text);
 check("nenhuma chamada de dinheiro à Ether até aqui", moneyCalls().length === 0, JSON.stringify(etherCalls));
+check("a credencial do tenant não foi usada para nada até aqui", !etherCalls.some((c) => c.auth === "Bearer tok-tenant"));
 
 r = await post(`/charges/${chargeCasa}/emit`, CASA);
 const dep = moneyCalls().find((c) => c.path === "/pix/deposit");
 check("operador da casa emite a cobrança Pix -> 200 com copia e cola", r.status === 200 && r.json?.pix_copy_paste === "000201copiaecola", r.text);
-check("depósito Pix enviado com o token do tenant", dep?.auth === "Bearer tok-tenant");
+check("depósito Pix enviado com o token da credencial de usuário da casa", dep?.auth === "Bearer tok-house");
 check("valor e chave de idempotência da própria cobrança",
   dep && JSON.parse(dep.body).amount === 100 && JSON.parse(dep.body).idempotencyKey === chargeCasa.replace(/-/g, "").slice(0, 25));
 check("cobrança gravada com o id do provedor", charges[chargeCasa].provider_charge_id === "dep-1");
@@ -188,7 +192,7 @@ r = await post(`/payments/${payCasa}/execute`, CASA);
 const wd = moneyCalls().find((c) => c.path === "/pix/withdraw/pix-key");
 check("operador da casa executa o Pix -> 200 concluído", r.status === 200 && r.json?.status === "completed", r.text);
 check("debita ANTES de enviar e conclui depois", ledger[0]?.[0] === "debit" && ledger[1]?.[0] === "complete" && ledger[1][2] === "pix-1", JSON.stringify(ledger));
-check("saque Pix enviado com o token do tenant e o valor do pagamento", wd?.auth === "Bearer tok-tenant" && JSON.parse(wd.body).amount === 10);
+check("saque Pix enviado com o token da casa e o valor do pagamento", wd?.auth === "Bearer tok-house" && JSON.parse(wd.body).amount === 10);
 check("tarifa da Ether lançada no ledger", ledger.some((l) => l[0] === "fee" && l[2] === 1));
 
 // Ether recusa: estorno.
@@ -230,9 +234,11 @@ r = await (async () => {
 })();
 check("boleto-status com id malformado -> 404 (não 500)", r.status === 404, String(r.status));
 
+check("NENHUMA chamada de dinheiro usou o token do tenant", !moneyCalls().some((c) => c.auth === "Bearer tok-tenant"));
+
 // --- logs -----------------------------------------------------------------------------
 const logText = logs.join("\n");
-check("log não contém token nem segredo do tenant", !logText.includes("tok-tenant") && !logText.includes("tenant-secret-nao-usar"));
+check("log não contém token nem segredo (tenant ou casa)", !logText.includes("tok-tenant") && !logText.includes("tok-house") && !logText.includes("tenant-secret-nao-usar") && !logText.includes("house-user-secret-nao-vazar"));
 
 server.close();
 globalThis.fetch = realFetch;

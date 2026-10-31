@@ -113,8 +113,8 @@ globalThis.fetch = async (url, options = {}) => {
     }
     return new Response(JSON.stringify({ access_token: "tok:tenant", expires_in: 3600 }), { status: 200 });
   }
-  if (u.startsWith("https://ether.invalid/account-balance")) {
-    etherCalls.push(`balance:${options.headers?.Authorization}`);
+  if (u.startsWith("https://ether.invalid/account-balance/")) {
+    etherCalls.push(`balance:${u.split("/account-balance/")[1]}:${options.headers?.Authorization}`);
     return new Response(JSON.stringify({ balance: 0.9 }), { status: 200 });
   }
   if (u.startsWith("https://ether.invalid/users/bank-account/details")) {
@@ -199,7 +199,8 @@ check("compliance não vê o saldo da casa -> 403", r.status === 403, r.text);
 const gravacoesAntes = profileUpdates.length;
 r = await call("GET", "/admin/house-account/balance", ADMIN);
 check("conferência devolve o saldo cru da Ether e o do ledger", r.status === 200 && r.json.ether_balance_raw === 0.9 && r.json.local_balance_cents === 0, r.text);
-check("saldo da Ether lido com o token do tenant", etherCalls.includes("balance:Bearer tok:tenant"), JSON.stringify(etherCalls));
+check("saldo lido por GET /account-balance/{userId} da conta da casa, com o token do tenant (só leitura)",
+  etherCalls.includes(`balance:${ETHER_CASA}:Bearer tok:tenant`), JSON.stringify(etherCalls));
 check("conferência não grava nada", profileUpdates.length === gravacoesAntes);
 
 // --- desvínculo -----------------------------------------------------------------

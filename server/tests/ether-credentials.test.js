@@ -11,6 +11,8 @@ process.env.PGUSER = "test";
 process.env.PGPASSWORD = "test";
 process.env.ETHER_CREDENTIALS_KEY = crypto.randomBytes(32).toString("base64");
 process.env.ETHER_HOUSE_USER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+process.env.ETHER_HOUSE_CLIENT_ID = "house-user-client-id";
+process.env.ETHER_HOUSE_CLIENT_SECRET = "house-user-secret-nao-vazar";
 
 const { pool } = await import("../src/db.js");
 const { config } = await import("../src/config.js");
@@ -152,10 +154,14 @@ linked[CASA] = ETHER_CASA;
 admins.add(CASA);
 linked[ANA.userId] = ANA.etherUserId;
 vault.clearTokenCacheForTest();
+const authAntes = authCalls.length;
 const tCasa = await vault.getUserEtherToken(CASA);
-check("operador ligado à conta da casa recebe o token do tenant", tCasa.startsWith(`tok-${config.ether.clientId}-`), tCasa);
+check("operador da casa recebe o token da credencial de USUÁRIO da casa", tCasa.startsWith("tok-house-user-client-id-"), tCasa);
+check("o token do tenant NUNCA é usado na trilha de dinheiro",
+  authCalls.slice(authAntes).every((id) => id !== config.ether.clientId), JSON.stringify(authCalls.slice(authAntes)));
 const tAna = await vault.getUserEtherToken(ANA.userId);
-check("cliente ligado a outra conta continua no próprio token, nunca no do tenant", !tAna.startsWith(`tok-${config.ether.clientId}-`), tAna);
+check("cliente ligado a outra conta continua no próprio token, nunca no da casa nem no do tenant",
+  !tAna.startsWith("tok-house-") && !tAna.startsWith(`tok-${config.ether.clientId}-`), tAna);
 check("usuário sem vínculo nem credencial não opera (sem fallback para o tenant)",
   await rejects(vault.getUserEtherToken("u-sem-nada"), vault.CredentialUnavailableError));
 linked["u-intruso"] = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -173,9 +179,26 @@ admins.add(CASA);
 
 const houseBackup = config.ether.houseUserId;
 config.ether.houseUserId = "";
-check("sem ETHER_HOUSE_USER_ID ninguém recebe o token do tenant",
+check("sem ETHER_HOUSE_USER_ID ninguém opera a conta da casa",
   await rejects(vault.getUserEtherToken(CASA), vault.CredentialUnavailableError));
 config.ether.houseUserId = houseBackup;
+
+// Sem a credencial de usuário da casa, o operador NÃO cai no token do tenant.
+const hcId = config.ether.houseClientId, hcSecret = config.ether.houseClientSecret;
+vault.clearTokenCacheForTest();
+config.ether.houseClientId = ""; config.ether.houseClientSecret = "";
+const authSem = authCalls.length;
+check("sem ETHER_HOUSE_CLIENT_ID/SECRET o operador da casa não opera (sem fallback para o tenant)",
+  await rejects(vault.getUserEtherToken(CASA), vault.CredentialUnavailableError) && authCalls.length === authSem);
+config.ether.houseClientId = hcId; config.ether.houseClientSecret = hcSecret;
+
+// Credencial da casa recusada pela Ether: nega e não derruba para o tenant.
+vault.clearTokenCacheForTest();
+authMode = "reject";
+const authRec = authCalls.length;
+check("credencial da casa recusada pela Ether -> não opera",
+  await rejects(vault.getUserEtherToken(CASA), vault.CredentialUnavailableError) && authCalls.slice(authRec).every((id) => id === hcId));
+authMode = "ok";
 
 // operationToken: conta não habilitada vira 403 com código, nunca token do tenant.
 try {
@@ -184,14 +207,15 @@ try {
 } catch (error) {
   check("operationToken sem conta habilitada -> 403 ACCOUNT_NOT_ENABLED", error.status === 403 && error.code === "ACCOUNT_NOT_ENABLED");
 }
-check("operationToken do operador da casa devolve o token do tenant",
-  (await vault.operationToken(CASA)).startsWith(`tok-${config.ether.clientId}-`));
+vault.clearTokenCacheForTest();
+check("operationToken do operador da casa devolve o token da credencial de usuário da casa",
+  (await vault.operationToken(CASA)).startsWith("tok-house-user-client-id-"));
 
 // --- logs -----------------------------------------------------------------------
 const logText = logs.join("\n");
 check("log não contém segredo, token nem chave mestra",
   !logText.includes(SECRET_ANA) && !logText.includes(SECRET_BIA) && !logText.includes("segredo-novo-ana") &&
-  !logText.includes("tok-") && !logText.includes(keyBackup));
+  !logText.includes("tok-") && !logText.includes(keyBackup) && !logText.includes("house-user-secret-nao-vazar"));
 
 process.stdout.write(FAIL ? `\n${FAIL} falha(s)\n` : "\nTodos os testes passaram.\n");
 process.exit(FAIL ? 1 : 0);

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { withService, withUser } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, requireRole, validate } from "../middleware.js";
 import { runProviderEvent } from "./webhook.js";
-import { getAccountBalance, getHouseEtherUserId, getTenantToken } from "../ether.js";
+import { getClientBalanceAsTenant, getHouseEtherUserId } from "../ether.js";
 import { revokeCredential } from "../etherCredentials.js";
 import { etherErrorFields } from "../safeLog.js";
 
@@ -282,8 +282,8 @@ adminRouter.get(
 );
 
 // Conferência (só leitura): saldo da conta da casa na Ether × saldo no ledger do
-// operador vinculado. O valor da Ether vai CRU (a doc não diz se é reais ou
-// centavos) — a unidade é confirmada olhando a tela antes de qualquer lançamento.
+// operador vinculado. O saldo vem de GET /account-balance/{userId} com a credencial do
+// tenant (a única coisa que ela faz com a conta de um cliente). Valor em reais, cru.
 adminRouter.get(
   "/house-account/balance",
   requireRole("admin"),
@@ -291,8 +291,12 @@ adminRouter.get(
     const house = houseAccountOrFail();
     let etherBalance;
     try {
-      const result = await getAccountBalance(await getTenantToken());
-      etherBalance = result?.balance ?? null;
+      const result = await getClientBalanceAsTenant(house.etherUserId);
+      etherBalance = typeof result?.balance === "number" ? result.balance : null;
+      if (etherBalance === null) {
+        // Chamada não documentada: se o formato for outro, o log diz quais campos vieram.
+        console.error("Saldo da conta da casa veio num formato inesperado", { campos: Object.keys(result ?? {}) });
+      }
     } catch (error) {
       console.error("Saldo da conta da casa indisponível na Ether", etherErrorFields(error));
       throw new ApiError(424, "A Ether não devolveu o saldo da conta da LivrePay agora.", "HOUSE_BALANCE_UNAVAILABLE");

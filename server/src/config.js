@@ -97,6 +97,12 @@ export const config = {
     // credencial do tenant (400 USR_VAL_008, 2026-10-31). Vazio = conta da casa
     // desligada: ninguém recebe o token do tenant para movimentar dinheiro.
     houseUserId: optional("ETHER_HOUSE_USER_ID", "").trim().toLowerCase(),
+    // Credencial de escopo de USUÁRIO da conta da casa (a que a Ether gera a partir do
+    // userId acima). É ela, e não a do tenant, que opera Pix e boleto: a credencial do
+    // tenant só cadastra clientes e consulta saldos (confirmado pela Ether, 2026-10-31).
+    // Sem as duas, ninguém opera a conta da casa (403 ACCOUNT_NOT_ENABLED).
+    houseClientId: optional("ETHER_HOUSE_CLIENT_ID", ""),
+    houseClientSecret: optional("ETHER_HOUSE_CLIENT_SECRET", ""),
     // Cognito: a Ether usa AWS Cognito para autenticação de sub-contas.
     // O LivrePay (participant) precisa dessas credenciais para criar/autenticar
     // usuários finais na Ether.

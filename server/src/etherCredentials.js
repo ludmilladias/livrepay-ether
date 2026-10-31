@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { config } from "./config.js";
 import { withService } from "./db.js";
-import { authenticateClient, getHouseEtherUserId, getTenantToken } from "./ether.js";
+import { authenticateClient, getHouseEtherUserId } from "./ether.js";
 import { ApiError } from "./middleware.js";
 
 /**
@@ -14,14 +14,14 @@ import { ApiError } from "./middleware.js";
  * Regras:
  *  - A credencial usada é SEMPRE escolhida pelo userId do JWT de quem chama
  *    (quem chama esta camada passa req.userId), nunca por dado vindo do cliente.
- *  - Conta da casa: o perfil ligado (profiles.ether_user_id) à MESMA conta que a
- *    credencial do tenant opera (ETHER_HOUSE_USER_ID), E com papel admin no
- *    momento da chamada, usa o
- *    token do tenant, que já fica no servidor. O vínculo é gravado pela rota admin
- *    /users/:id/link-house-account; o onboarding comum recusa o ID da casa.
- *    Tirar o papel admin corta o acesso na hora.
- *  - Qualquer outro usuário sem credencial ativa não opera: lança
- *    CredentialUnavailableError (nunca cai na conta do tenant).
+ *  - Conta da casa: o perfil ligado (profiles.ether_user_id) à conta da LivrePay
+ *    (ETHER_HOUSE_USER_ID), E com papel admin no momento da chamada, autentica com a
+ *    credencial de USUÁRIO da casa (ETHER_HOUSE_CLIENT_ID/SECRET, no servidor). O
+ *    vínculo é gravado pela rota admin /users/:id/link-house-account; o onboarding
+ *    comum recusa o ID da casa. Tirar o papel admin corta o acesso na hora.
+ *  - A credencial do TENANT nunca entra aqui: ela só cadastra clientes e lê saldos, e
+ *    a Ether recusa Pix/boleto com ela. Qualquer outro usuário sem credencial ativa
+ *    não opera: lança CredentialUnavailableError.
  *  - Nunca logar clientSecret, token nem o texto cifrado.
  */
 
@@ -72,6 +72,10 @@ export function decryptSecret({ ciphertext, iv, tag, keyVersion }, owner) {
 // Token da Ether por usuário, só em memória (por instância). Nunca em Redis ou banco.
 const tokenCache = new Map(); // userId -> { token, expiresAt, credentialId }
 const MAX_TOKEN_AGE_MS = 55 * 60 * 1000;
+// Token da conta da casa: cache PRÓPRIO, nunca em tokenCache. Quem decide se alguém
+// o recebe é isHouseOperator(), checado a cada chamada; se o token ficasse em
+// tokenCache (por userId), o caminho comum o devolveria a quem perdeu o papel admin.
+let houseTokenCache = null; // { token, expiresAt }
 const TOKEN_SAFETY_MARGIN_MS = 60 * 1000;
 
 function forgetToken(userId) {
@@ -155,9 +159,9 @@ export async function revokeCredential(userId) {
 }
 
 /**
- * O usuário opera a conta da casa? Exige as duas coisas: estar ligado à conta que
- * a credencial do tenant opera (ETHER_HOUSE_USER_ID) E ter papel admin agora.
- * Sem a variável configurada, ninguém opera a conta da casa.
+ * O usuário opera a conta da casa? Exige as duas coisas: estar ligado à conta da
+ * LivrePay (ETHER_HOUSE_USER_ID) E ter papel admin agora. Sem a variável
+ * configurada, ninguém opera a conta da casa.
  */
 async function isHouseOperator(userId) {
   const house = getHouseEtherUserId();
@@ -176,12 +180,40 @@ async function isHouseOperator(userId) {
 }
 
 /**
+ * Token da conta da casa: autentica com a credencial de usuário da LivrePay
+ * (variáveis do servidor) e guarda o token em memória por até 55 min. Sem as duas
+ * variáveis, a conta da casa não opera. Não há linha no cofre para marcar como
+ * suspeita: a credencial recusada só nega.
+ */
+async function getHouseToken() {
+  const { houseClientId, houseClientSecret } = config.ether;
+  if (!houseClientId || !houseClientSecret) throw new CredentialUnavailableError();
+
+  if (houseTokenCache && houseTokenCache.expiresAt > Date.now() + TOKEN_SAFETY_MARGIN_MS) {
+    return houseTokenCache.token;
+  }
+
+  let auth;
+  try {
+    auth = await authenticateClient(houseClientId, houseClientSecret);
+  } catch (error) {
+    if (error?.status === 400 || error?.status === 401) {
+      console.error("Ether recusou a credencial da conta da casa", { status: error.status });
+      throw new CredentialUnavailableError("Credencial da conta da casa recusada pelo banco parceiro");
+    }
+    throw error;
+  }
+  houseTokenCache = { token: auth.token, expiresAt: Math.min(auth.expiresAt, Date.now() + MAX_TOKEN_AGE_MS) };
+  return auth.token;
+}
+
+/**
  * Token da Ether que opera SOMENTE a conta do cliente `userId`. Autentica com a
  * credencial dele e guarda o token em memória por até 55 min.
  * Credencial recusada pela Ether (401/400 no authenticate) vira 'suspect'.
  */
 export async function getUserEtherToken(userId) {
-  if (await isHouseOperator(userId)) return getTenantToken();
+  if (await isHouseOperator(userId)) return getHouseToken();
 
   const cached = tokenCache.get(userId);
   if (cached && cached.expiresAt > Date.now() + TOKEN_SAFETY_MARGIN_MS) return cached.token;
@@ -231,4 +263,5 @@ export async function operationToken(userId) {
 /** Só para teste. */
 export function clearTokenCacheForTest() {
   tokenCache.clear();
+  houseTokenCache = null;
 }
