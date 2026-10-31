@@ -173,8 +173,11 @@ async function emitCharge(req, res) {
 
   // Campos do provedor são gravados com privilégio de serviço: o usuário não
   // pode escrever provider_* por conta própria.
-  await withService(async (client) => {
-    await client.query(
+  // `provider_charge_id is null`: dois cliques em "emitir" passam juntos pela
+  // checagem acima; só o primeiro grava. O segundo não sobrescreve o QR do
+  // primeiro (um PIX pago no QR sobrescrito ficaria sem cobrança para creditar).
+  const stored = await withService(async (client) => {
+    const { rowCount } = await client.query(
       `update public.charges
           set status = 'pending', provider = 'ether',
               provider_charge_id = $2, provider_status = $3,
@@ -183,7 +186,7 @@ async function emitCharge(req, res) {
                 'pix_copy_paste', $5::text,
                 'qr_code_id', $4::text,
                 'expire_at', $6::text)
-        where id = $1`,
+        where id = $1 and provider_charge_id is null`,
       [
         charge.id,
         deposit.uuid,
@@ -193,6 +196,7 @@ async function emitCharge(req, res) {
         deposit.expireAt,
       ],
     );
+    return rowCount === 1;
   }).catch((error) => {
     // A cobrança existe na Ether mas não conseguimos gravar. Registramos
     // para conciliação em vez de fingir falha total.
@@ -203,6 +207,14 @@ async function emitCharge(req, res) {
     });
     throw new ApiError(500, "Cobrança emitida, mas houve falha ao salvar. Contate o suporte.");
   });
+  if (!stored) {
+    // Emissão concorrente: outra requisição já gravou o depósito desta cobrança.
+    console.error("Emissão concorrente: depósito descartado, cobrança já tinha outro", {
+      chargeId: charge.id,
+      etherUuid: deposit.uuid,
+    });
+    throw new ApiError(409, "Cobrança já emitida no provedor");
+  }
 
   res.json({
     charge_id: charge.id,

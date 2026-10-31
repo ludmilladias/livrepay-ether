@@ -14,6 +14,8 @@ import {
 } from "../ether.js";
 
 export const paymentsRouter = Router();
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 paymentsRouter.use(requireAuth);
 
 const kindSchema = z.enum(["transferencia", "conta", "folha"]);
@@ -129,6 +131,7 @@ paymentsRouter.patch(
 paymentsRouter.get(
   "/:id/boleto-status",
   asyncRoute(async (req, res) => {
+    if (!UUID_RE.test(String(req.params.id))) throw new ApiError(404, "Pagamento não encontrado");
     const payment = await withUser(req.userId, async (client) => {
       const { rows } = await client.query(
         `select provider, provider_payment_id from public.payments where id = $1`,
@@ -161,9 +164,8 @@ paymentsRouter.get(
  * disparar vários pagamentos concorrentes com saldo para apenas um. O preço é
  * ter de estornar quando o provedor recusa, o que é feito logo abaixo.
  *
- * Extraída da rota para ser reutilizável pelo worker (`server/src/worker.js`),
- * que dispara pagamentos agendados (`scheduled_for`) sem uma requisição HTTP
- * por trás — mesma lógica, mesmo caminho de estorno, seja quem chamar.
+ * Exportada para um futuro executor de pagamentos agendados (`scheduled_for`),
+ * que ainda não existe: mesma lógica, mesmo caminho de estorno, seja quem chamar.
  */
 export async function executePaymentForUser(userId, paymentId) {
   // Propriedade ANTES do token: id de outro dono e id inexistente têm de
@@ -171,9 +173,7 @@ export async function executePaymentForUser(userId, paymentId) {
   // de "conta não habilitada" antes disso esconderia um furo de RLS. A checagem é a RLS de
   // public.payments ("usuário lê os próprios"), não um `if` sobre user_id.
   // UUID malformado vira 404 também (senão o Postgres responderia 22P02 -> 500).
-  const idOk =
-    typeof paymentId === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(paymentId);
+  const idOk = typeof paymentId === "string" && UUID_RE.test(paymentId);
   const visible = idOk
     ? await withUser(userId, async (client) => {
         const { rows } = await client.query(`select id from public.payments where id = $1`, [paymentId]);
@@ -242,13 +242,27 @@ async function executeWithToken(userId, paymentId, token) {
     }
   }
 
-  // Passo 1: debita e trava em 'processing'. Roda como o usuário — a função
-  // valida saldo e propriedade. Se falhar aqui, nada foi debitado.
-  await withUser(userId, async (client) => {
+  // Passo 1: REIVINDICA, debita e trava em 'processing', numa só transação.
+  // Roda como o usuário — a função valida saldo e propriedade. Se falhar aqui,
+  // nada foi debitado.
+  //
+  // Duplo clique: execute_payment() devolve a linha SEM erro quando o pagamento
+  // já está em 'processing', então duas requisições que leram 'draft' acima
+  // seguiriam as duas para a Ether (2 envios, 1 débito). O advisory lock por
+  // pagamento serializa as transações; a segunda relê o status depois do commit
+  // da primeira e para em 409, antes de qualquer envio.
+  const claimed = await withUser(userId, async (client) => {
+    await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [paymentId]);
+    const { rows } = await client.query(`select status from public.payments where id = $1`, [paymentId]);
+    const current = rows[0]?.status;
+    if (current !== "draft" && current !== "scheduled") return false;
     await client.query("select public.execute_payment($1)", [paymentId]);
+    return true;
   });
+  if (!claimed) throw new ApiError(409, "Pagamento já está em processamento ou foi concluído");
 
-  // Passo 2: daqui em diante o saldo JÁ saiu. Qualquer falha obriga estorno.
+  // Passo 2: daqui em diante o saldo JÁ saiu. Recusa explícita da Ether
+  // estorna; resultado INCERTO (timeout, rede, 5xx) não — ver o catch.
   try {
     const result =
       method === "BOLETO"
@@ -328,6 +342,23 @@ async function executeWithToken(userId, paymentId, token) {
       ...(method === "PIX" ? { e2e: result.e2e, fee_cents: result.feeAmount } : { boleto_id: result.boletoId }),
     };
   } catch (error) {
+    // Resultado INCERTO: nosso timeout (EtherError 504), erro de rede (não é
+    // EtherError) ou 5xx da Ether. A Ether pode ter processado — o saque PIX não
+    // tem chave de idempotência — e estornar aqui criaria dinheiro do nada se o
+    // valor saiu. Fica em 'processing' (debitado) para conciliar com o extrato.
+    const uncertain = !(error instanceof EtherError) || error.status >= 500;
+    if (uncertain) {
+      console.error("PAGAMENTO INCERTO: sem resposta conclusiva da Ether — conciliar antes de estornar", {
+        paymentId,
+        method,
+        ...etherErrorFields(error),
+      });
+      return {
+        status: "processing",
+        warning: "Sem confirmação do banco parceiro. O pagamento será conferido antes de qualquer estorno.",
+      };
+    }
+
     console.error("Provedor recusou o pagamento — estornando", {
       paymentId,
       method,

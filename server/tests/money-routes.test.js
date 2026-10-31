@@ -57,13 +57,24 @@ function addPayment(owner, over = {}) {
   return id;
 }
 
+// pg_advisory_xact_lock emulado: segura até COMMIT/ROLLBACK da transação.
+const locks = new Map(); // chave -> Promise da transação que segura
 pool.connect = async () => {
   let claim = null;
+  let releaseLock = null;
   return {
     query: async (sql, params = []) => {
       const q = String(sql).replace(/\s+/g, " ").trim();
       if (q.startsWith("SELECT set_config")) { claim = params[0]; return { rows: [] }; }
-      if (/^(BEGIN|COMMIT|ROLLBACK|SET LOCAL)/i.test(q)) return { rows: [] };
+      if (/^(COMMIT|ROLLBACK)/i.test(q)) { releaseLock?.(); releaseLock = null; return { rows: [] }; }
+      if (/^(BEGIN|SET LOCAL)/i.test(q)) return { rows: [] };
+      if (q.includes("pg_advisory_xact_lock")) {
+        while (locks.has(params[0])) await locks.get(params[0]);
+        let release;
+        locks.set(params[0], new Promise((r) => { release = r; }));
+        releaseLock = () => { locks.delete(params[0]); release(); };
+        return { rows: [] };
+      }
       // RLS emulada: o usuário só enxerga as próprias linhas.
       if (q.includes("from public.charges where id")) {
         const c = charges[params[0]];
@@ -71,8 +82,9 @@ pool.connect = async () => {
       }
       if (q.includes("update public.charges")) {
         const c = charges[params[0]];
+        if (c.provider_charge_id !== null) return { rows: [], rowCount: 0 };
         Object.assign(c, { provider_charge_id: params[1], provider_status: params[2] });
-        return { rows: [] };
+        return { rows: [], rowCount: 1 };
       }
       if (q.includes("from public.payments where id")) {
         const p = payments[params[0]];
@@ -105,9 +117,12 @@ globalThis.fetch = async (url, options = {}) => {
     return new Response(JSON.stringify({ access_token: "tok-tenant", expires_in: 3600 }), { status: 200 });
   }
   if (u.endsWith("/pix/deposit")) {
+    await new Promise((r) => setTimeout(r, 30)); // deixa emissões concorrentes se cruzarem
     return new Response(JSON.stringify({ uuid: "dep-1", status: "PENDING", qrCodeId: "qr-1", pixKey: "000201copiaecola", expireAt: "2026-10-31T00:00:00Z" }), { status: 201 });
   }
   if (u.endsWith("/pix/withdraw/pix-key")) {
+    await new Promise((r) => setTimeout(r, 30)); // deixa cliques concorrentes se cruzarem
+    if (withdrawMode === "timeout") return new Response("{}", { status: 504 });
     if (withdrawMode === "reject") return new Response(JSON.stringify({ code: "PIX_VAL_001" }), { status: 400 });
     return new Response(JSON.stringify({ pixId: "pix-1", status: "PROCESSING", e2e: "E2E1", feeAmount: 1 }), { status: 201 });
   }
@@ -183,6 +198,36 @@ ledger.length = 0;
 r = await post(`/payments/${payRecusado}/execute`, CASA);
 check("Ether recusa o Pix -> estorna o débito", ledger[0]?.[0] === "debit" && ledger.some((l) => l[0] === "refund" && l[1] === payRecusado) && r.status >= 400, JSON.stringify(ledger));
 withdrawMode = "ok";
+
+// Resultado incerto (504/5xx/rede): NÃO estorna — o dinheiro pode ter saído.
+const payIncerto = addPayment(CASA);
+withdrawMode = "timeout";
+ledger.length = 0;
+r = await post(`/payments/${payIncerto}/execute`, CASA);
+check("timeout/5xx da Ether -> 202 processing, debitado e SEM estorno",
+  r.status === 202 && r.json?.status === "processing" && ledger.some((l) => l[0] === "debit") && !ledger.some((l) => l[0] === "refund"), r.text + JSON.stringify(ledger));
+withdrawMode = "ok";
+
+// Duplo clique: duas execuções em paralelo -> 1 débito, 1 envio, a outra 409.
+const payDuplo = addPayment(CASA);
+ledger.length = 0;
+const antes = moneyCalls().filter((c) => c.path === "/pix/withdraw/pix-key").length;
+const [d1, d2] = await Promise.all([post(`/payments/${payDuplo}/execute`, CASA), post(`/payments/${payDuplo}/execute`, CASA)]);
+const envios = moneyCalls().filter((c) => c.path === "/pix/withdraw/pix-key").length - antes;
+check("duplo clique em paralelo: 1 débito e 1 envio à Ether",
+  ledger.filter((l) => l[0] === "debit").length === 1 && envios === 1, JSON.stringify({ ledger, envios }));
+check("duplo clique em paralelo: um 200 e um 409", [d1.status, d2.status].sort().join(",") === "200,409", `${d1.status},${d2.status}`);
+
+// Emissão concorrente: só uma grava; a outra 409, sem sobrescrever o QR.
+const chargeDupla = addCharge(CASA);
+const [e1, e2] = await Promise.all([post(`/charges/${chargeDupla}/emit`, CASA), post(`/charges/${chargeDupla}/emit`, CASA)]);
+check("emissão concorrente: um 200 e um 409", [e1.status, e2.status].sort().join(",") === "200,409", `${e1.status},${e2.status}`);
+
+r = await (async () => {
+  const res = await realFetch(`${base}/payments/nao-e-uuid/boleto-status`, { headers: { Authorization: `Bearer ${signAccessToken(CASA)}` } });
+  return { status: res.status };
+})();
+check("boleto-status com id malformado -> 404 (não 500)", r.status === 404, String(r.status));
 
 // --- logs -----------------------------------------------------------------------------
 const logText = logs.join("\n");
