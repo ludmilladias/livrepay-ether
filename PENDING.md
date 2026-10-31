@@ -845,6 +845,46 @@ confirmação de saque) chegar e é processado corretamente (`provider_events` c
 - **`/exchange/send`:** `amount` na menor unidade, string sem decimais; rede `Ethereum` ou
   `ERC20` (não `ETH`). Não usamos esse endpoint hoje.
 
+### 2026-10-31 — Pix/boleto ligados, mas a Ether recusa com a credencial do tenant
+
+**Estado em produção:** `POST /charges/:id/emit` e `POST /payments/:id/execute` estão
+**ligados** (commits 5aa84b7, f8f2958, d52d7d5). Quem opera é decidido por
+`operationToken(userId)` (`server/src/etherCredentials.js`): token do cofre para cliente com
+credencial; token do tenant só para o admin ligado à conta da casa
+(`ETHER_HOUSE_USER_ID` + papel admin checado a cada chamada); senão 403
+`ACCOUNT_NOT_ENABLED`. Funções de dinheiro em `ether.js` exigem token explícito.
+
+**Bloqueio (reproduzido por curl direto, host `.com.br`, UA `Mozilla/5.0`):** com a
+credencial do tenant, `GET /account-balance` = 200 `{balance:0}`, `GET
+/users/bank-account/details` = 400 `USR_VAL_008`, `POST /pix/deposit` = 404 `PIX_USR_002`.
+O JWT do tenant tem `scope=https://api.etherprivatebank.com.br/tenant` e `sub=client_id`
+(sem usuário). Hipótese (não confirmada): Pix exige credencial de escopo de USUÁRIO. Os
+R$ 0,90 estão no extrato do cliente `e9c48093-25e8-4676-9956-a84cdd7b393a`
+(jandir@livrepay.app, o mesmo login do backoffice do tenant).
+
+**Enviado ao suporte da Ether (2026-10-31), aguardando:** credencial de usuário para o
+`userId` `e9c48093…`; API para gerar credencial de cliente (sem entrega manual); significado
+de `PIX_USR_002`/`USR_VAL_008`; se dá para operar vários clientes numa conta só.
+
+**Quando a Ether responder:** (1) conta da casa → variáveis `ETHER_HOUSE_CLIENT_ID` e
+`ETHER_HOUSE_CLIENT_SECRET` no servidor e o operador da casa autentica com elas (hoje usa o
+token do tenant); (2) clientes → integrar a API de credenciais ao cofre (ninguém digita
+segredo; a rota admin de colar clientId/secret foi removida de propósito).
+
+**Riscos abertos da revisão de segurança (antes de deixar ligado):** (a) admin vinculado
+consegue criar recebível, verificá-lo e antecipar (gera saldo sacável da conta real) —
+separar quem cria de quem aprova e exigir MFA de admin; (b) saque Pix sem chave de
+idempotência: resultado incerto (timeout/5xx) fica em `processing` para conciliar, não
+estorna; (c) ledger local deve espelhar o saldo da Ether na conta da casa — hoje há a
+conferência em Admin → Credenciais da Ether, e o lançamento de saldo inicial não foi feito.
+
+**Cuidados operacionais:** a doc da Ether cita o host `api.etherglobalassets.com` (sem
+`.br`), que **não resolve no DNS**: usar sempre `.com.br`. `curl` sem UA `Mozilla/5.0` é
+barrado pelo CloudFront (403 HTML). O testador da doc passa por `proxy.scalar.com` e dá 403
+mesmo com token válido: não serve de prova. O `ETHER_PIX_BASE_URL` (opcional, sem efeito se
+vazio) ficou no código sem uso e pode ser removido. O `clientSecret` do tenant apareceu em
+captura de tela em 2026-10-31: pedir um novo à Ether.
+
 ---
 
 ## 2. Módulos com dado 100% fictício (maior pendência restante)
