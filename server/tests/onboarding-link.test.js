@@ -40,6 +40,35 @@ function deps({ createUserProfile, acceptTerms, submitPepDeclaration, serviceQue
 
 const base = { userId: USER_ID, payload: { any: "payload" }, taxId: "12345678900", phone: "11999999999", userAgent: "jest-ua" };
 
+// --- conta da casa: onboarding comum que recebe o ID dela é recusado ----------
+{
+  const serviceQueries = [];
+  const d = { ...deps({ serviceQueries }), isHouseAccount: async (id) => id === "ether-abc" };
+  try {
+    await createAndLinkEtherAccount(base, d);
+    check("onboarding com o ID da conta da casa lança erro", false);
+  } catch (error) {
+    check("ID da conta da casa no onboarding comum -> 409", error.status === 409 && error.code === "ETHER_ACCOUNT_ALREADY_LINKED");
+    check("nada gravado no perfil quando o ID é o da casa", serviceQueries.length === 0);
+  }
+}
+{
+  const serviceQueries = [];
+  const d = { ...deps({ serviceQueries }), isHouseAccount: async () => { throw new Error("ether fora"); } };
+  try {
+    await createAndLinkEtherAccount(base, d);
+    check("sem conferir a conta da casa lança erro", false);
+  } catch (error) {
+    check("não deu para conferir a conta da casa -> falha fechado (503), nada gravado", error.status === 503 && serviceQueries.length === 0);
+  }
+}
+{
+  const serviceQueries = [];
+  const d = { ...deps({ serviceQueries }), isHouseAccount: async () => false };
+  const result = await createAndLinkEtherAccount(base, d);
+  check("ID que não é o da casa segue o vínculo normal", result.etherUserId === "ether-abc" && serviceQueries.length === 1);
+}
+
 // --- caminho feliz -----------------------------------------------------------
 {
   const serviceQueries = [];

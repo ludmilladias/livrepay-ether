@@ -183,22 +183,41 @@ export function useEtherCredentials() {
   });
 }
 
-export function useStoreEtherCredential() {
+/** Conta da própria LivrePay na Ether, lida pelo servidor com a credencial do tenant. */
+export interface HouseAccount {
+  ether_user_id: string;
+  name: string | null;
+  tax_id: string | null;
+  linked_user_id: string | null;
+}
+
+const houseAccountKey = ["admin", "house-account"] as const;
+
+export function useHouseAccount() {
+  return useQuery({
+    queryKey: houseAccountKey,
+    queryFn: () => api.get<HouseAccount>("/admin/house-account"),
+  });
+}
+
+/** Liga a conta da LivrePay a um usuário admin. Sem segredo no corpo: o servidor já tem a credencial. */
+export function useLinkHouseAccount() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      userId,
-      etherUserId,
-      clientId,
-      clientSecret,
-    }: {
-      userId: string;
-      etherUserId: string;
-      clientId: string;
-      clientSecret: string;
-    }) => api.post(`/admin/users/${userId}/ether-credential`, { etherUserId, clientId, clientSecret }),
+    mutationFn: (userId: string) => api.post(`/admin/users/${userId}/link-house-account`),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: etherCredentialsKey });
+      void queryClient.invalidateQueries({ queryKey: houseAccountKey });
+    },
+  });
+}
+
+/** Tira o vínculo de quem opera a conta da LivrePay (troca de operador, saída da empresa). */
+export function useUnlinkHouseAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post(`/admin/house-account/unlink`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: houseAccountKey });
     },
   });
 }

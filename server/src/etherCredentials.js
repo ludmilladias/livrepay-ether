@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { config } from "./config.js";
 import { withService } from "./db.js";
-import { authenticateClient } from "./ether.js";
+import { authenticateClient, getTenantAccount, getTenantToken } from "./ether.js";
 
 /**
  * Cofre das credenciais da Ether por cliente final (vault.ether_credentials).
@@ -13,8 +13,13 @@ import { authenticateClient } from "./ether.js";
  * Regras:
  *  - A credencial usada é SEMPRE escolhida pelo userId do JWT de quem chama
  *    (quem chama esta camada passa req.userId), nunca por dado vindo do cliente.
- *  - Sem credencial ativa, nada cai na conta do tenant: lança
- *    CredentialUnavailableError.
+ *  - Conta da casa: o perfil ligado (profiles.ether_user_id) à MESMA conta que a
+ *    credencial do tenant opera, E com papel admin no momento da chamada, usa o
+ *    token do tenant, que já fica no servidor. O vínculo é gravado pela rota admin
+ *    /users/:id/link-house-account; o onboarding comum recusa o ID da casa.
+ *    Tirar o papel admin corta o acesso na hora.
+ *  - Qualquer outro usuário sem credencial ativa não opera: lança
+ *    CredentialUnavailableError (nunca cai na conta do tenant).
  *  - Nunca logar clientSecret, token nem o texto cifrado.
  */
 
@@ -148,11 +153,40 @@ export async function revokeCredential(userId) {
 }
 
 /**
+ * O usuário opera a conta da casa? Exige as duas coisas: estar ligado à conta que
+ * a credencial do tenant opera E ter papel admin agora. Sem isso, nem consulta a
+ * Ether. Se a Ether não responder, devolve false: o caminho do cofre nunca
+ * entrega o token do tenant, então errar aqui só nega, nunca libera.
+ */
+async function isHouseOperator(userId) {
+  const row = await withService(async (client) => {
+    const { rows } = await client.query(
+      `select p.ether_user_id,
+              exists (select 1 from public.user_roles r where r.user_id = p.id and r.role = 'admin') as is_admin
+         from public.profiles p where p.id = $1`,
+      [userId],
+    );
+    return rows[0] ?? null;
+  });
+  const linked = row?.is_admin ? row.ether_user_id : null;
+  if (!linked) return false;
+  try {
+    const house = await getTenantAccount();
+    return String(linked).toLowerCase() === house.etherUserId;
+  } catch (error) {
+    console.error("Não foi possível consultar a conta do tenant na Ether", { status: error?.status });
+    return false;
+  }
+}
+
+/**
  * Token da Ether que opera SOMENTE a conta do cliente `userId`. Autentica com a
  * credencial dele e guarda o token em memória por até 55 min.
  * Credencial recusada pela Ether (401/400 no authenticate) vira 'suspect'.
  */
 export async function getUserEtherToken(userId) {
+  if (await isHouseOperator(userId)) return getTenantToken();
+
   const cached = tokenCache.get(userId);
   if (cached && cached.expiresAt > Date.now() + TOKEN_SAFETY_MARGIN_MS) return cached.token;
 

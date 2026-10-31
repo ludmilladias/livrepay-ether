@@ -57,6 +57,8 @@ globalThis.fetch = async (url, options) => {
   etherCalls.push({ url: u, options });
   if (u.endsWith("/auth/authenticate")) return jsonRes(201, { access_token: "tok", expires_in: 3600 });
   if (u.endsWith("/users/profile-data")) return profileDataResponse();
+  // Conta da casa (credencial do tenant): ID diferente do cliente do teste.
+  if (u.endsWith("/users/bank-account/details")) return jsonRes(200, { user: { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" } });
   if (u.endsWith("/accept-terms") || u.endsWith("/pep-declaration")) return jsonRes(400, echoBody("USR_VAL_099"));
   return jsonRes(404, {});
 };

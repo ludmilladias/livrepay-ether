@@ -3,8 +3,8 @@ import { z } from "zod";
 import { withService, withUser } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, requireRole, validate } from "../middleware.js";
 import { runProviderEvent } from "./webhook.js";
-import { authenticateClient, EtherError, getBankAccountDetails } from "../ether.js";
-import { revokeCredential, storeCredential } from "../etherCredentials.js";
+import { getTenantAccount } from "../ether.js";
+import { revokeCredential } from "../etherCredentials.js";
 
 export const adminRouter = Router();
 
@@ -236,24 +236,138 @@ adminRouter.delete(
   }),
 );
 
-// --- Credenciais da Ether por cliente ----------------------------------------
+// --- Credenciais da Ether -----------------------------------------------------
 //
-// A Ether gera um clientId/clientSecret por cliente final (a partir do userId
-// dele) e entrega por canal seguro. Um ADMIN cola o par aqui; o servidor confere
-// com a PRÓPRIA credencial de quem ela é, e só então cifra e guarda no cofre.
-// O segredo nunca volta em resposta, nem em log.
+// Ninguém digita clientId/clientSecret: credencial é coisa do servidor.
+//  - Conta da casa (LivrePay): a credencial do tenant já está no ambiente
+//    (ETHER_CLIENT_ID/SECRET). O admin só escolhe QUAL usuário admin opera essa
+//    conta; o ID da conta vem da própria Ether (getTenantAccount), nunca digitado.
+//  - Clientes: a credencial de cada um chega ao cofre (vault.ether_credentials)
+//    por integração com a Ether — ainda não existe; até lá, cliente não opera.
 //
-// withService aqui é deliberado: é ação de admin (requireRole("admin"), checado
-// no banco) que precisa ler o perfil de OUTRO usuário e escrever no cofre, que só
-// service_role alcança. Nunca é usado para servir dado ao próprio requisitante.
+// withService aqui é deliberado: ação de admin (requireRole("admin"), checado no
+// banco) que lê/grava o perfil de OUTRO usuário e lê o cofre, que só service_role
+// alcança. Nunca é usado para servir dado ao próprio requisitante.
 
-const onlyDigits = (v) => String(v ?? "").replace(/\D/g, "");
+const uuidParam = z.string().uuid();
 
-const credentialBody = z.object({
-  etherUserId: z.string().trim().uuid("userId da Ether inválido (copie o ID da URL do cliente no backoffice)"),
-  clientId: z.string().trim().min(4).max(200),
-  clientSecret: z.string().min(8).max(500),
-});
+// 424 e não 502: a borda da DigitalOcean troca 502/503/504 por uma página HTML
+// genérica e a mensagem não chegaria à tela (ver onboardingProviderError).
+async function tenantAccountOrFail() {
+  try {
+    return await getTenantAccount();
+  } catch (error) {
+    console.error("Conta do tenant indisponível na Ether", { status: error?.status });
+    throw new ApiError(
+      424,
+      "Não foi possível consultar a conta da LivrePay na Ether agora. Tente de novo em instantes.",
+      "HOUSE_ACCOUNT_UNAVAILABLE",
+    );
+  }
+}
+
+adminRouter.get(
+  "/house-account",
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const house = await tenantAccountOrFail();
+    const linkedUserId = await withService(async (client) => {
+      const { rows } = await client.query(`select id from public.profiles where ether_user_id = $1`, [
+        house.etherUserId,
+      ]);
+      return rows[0]?.id ?? null;
+    });
+    res.json({
+      ether_user_id: house.etherUserId,
+      name: house.name,
+      tax_id: house.taxId,
+      linked_user_id: linkedUserId,
+    });
+  }),
+);
+
+adminRouter.post(
+  "/users/:id/link-house-account",
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    const targetUserId = req.params.id;
+    if (!uuidParam.safeParse(targetUserId).success) throw new ApiError(400, "ID de usuário inválido");
+    const house = await tenantAccountOrFail();
+
+    await withService(async (client) => {
+      const { rows } = await client.query(
+        `select p.id, p.ether_user_id,
+                exists (select 1 from public.user_roles r where r.user_id = p.id and r.role = 'admin') as is_admin
+           from public.profiles p where p.id = $1`,
+        [targetUserId],
+      );
+      const target = rows[0];
+      if (!target) throw new ApiError(404, "Usuário não encontrado");
+      // Quem opera o dinheiro da casa é staff com papel admin, nunca um cliente.
+      if (!target.is_admin) {
+        throw new ApiError(
+          422,
+          "Só um usuário com papel admin pode operar a conta da LivrePay.",
+          "HOUSE_OPERATOR_NOT_ADMIN",
+        );
+      }
+      if (target.ether_user_id && String(target.ether_user_id).toLowerCase() !== house.etherUserId) {
+        throw new ApiError(
+          409,
+          "Este usuário já está ligado a outra conta da Ether.",
+          "ETHER_USER_MISMATCH",
+        );
+      }
+      const holder = await client.query(
+        `select id from public.profiles where ether_user_id = $1 and id <> $2`,
+        [house.etherUserId, targetUserId],
+      );
+      if (holder.rows.length) {
+        throw new ApiError(
+          409,
+          "A conta da LivrePay já está ligada a outro usuário.",
+          "HOUSE_ALREADY_LINKED",
+        );
+      }
+      try {
+        await client.query(
+          `update public.profiles set ether_user_id = $2, ether_account_status = 'full'
+            where id = $1 and ether_user_id is null`,
+          [targetUserId, house.etherUserId],
+        );
+      } catch (error) {
+        // Índice único profiles_ether_user_id_idx: outro admin ligou ao mesmo tempo.
+        if (error?.code === "23505") {
+          throw new ApiError(409, "A conta da LivrePay já está ligada a outro usuário.", "HOUSE_ALREADY_LINKED");
+        }
+        throw error;
+      }
+    });
+
+    console.log("house_account_linked", { targetUserId, etherUserId: house.etherUserId, actorId: req.userId });
+    res.json({ ether_user_id: house.etherUserId, linked_user_id: targetUserId });
+  }),
+);
+
+// Desvincula quem opera a conta da casa (troca de operador, saída da empresa).
+adminRouter.post(
+  "/house-account/unlink",
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    const house = await tenantAccountOrFail();
+    const unlinked = await withService(async (client) => {
+      const { rows } = await client.query(
+        `update public.profiles set ether_user_id = null, ether_account_status = 'pending'
+          where ether_user_id = $1
+          returning id`,
+        [house.etherUserId],
+      );
+      return rows[0]?.id ?? null;
+    });
+    console.log("house_account_unlinked", { unlinkedUserId: unlinked, etherUserId: house.etherUserId, actorId: req.userId });
+    res.json({ ether_user_id: house.etherUserId, linked_user_id: null });
+  }),
+);
 
 adminRouter.get(
   "/ether-credentials",
@@ -269,94 +383,6 @@ adminRouter.get(
       return result.rows;
     });
     res.json(rows);
-  }),
-);
-
-adminRouter.post(
-  "/users/:id/ether-credential",
-  requireRole("admin"),
-  validate(credentialBody),
-  asyncRoute(async (req, res) => {
-    const targetUserId = req.params.id;
-    const { etherUserId, clientId, clientSecret } = req.body;
-
-    const profile = await withService(async (client) => {
-      const { rows } = await client.query(
-        `select id, tax_id, ether_user_id from public.profiles where id = $1`,
-        [targetUserId],
-      );
-      return rows[0];
-    });
-    if (!profile) throw new ApiError(404, "Usuário não encontrado");
-    if (profile.ether_user_id && profile.ether_user_id !== etherUserId) {
-      throw new ApiError(
-        409,
-        "Este usuário já está ligado a outro cliente da Ether. Confira o ID antes de continuar.",
-        "ETHER_USER_MISMATCH",
-      );
-    }
-
-    // Prova de posse: autentica com a credencial recebida e pergunta de quem é a conta.
-    let details;
-    try {
-      const auth = await authenticateClient(clientId, clientSecret);
-      details = await getBankAccountDetails(auth.token);
-    } catch (error) {
-      console.error("Credencial de cliente não validou na Ether", {
-        targetUserId,
-        status: error instanceof EtherError ? error.status : undefined,
-      });
-      throw new ApiError(
-        422,
-        "A Ether não aceitou esta credencial. Confira o clientId e o clientSecret recebidos.",
-        "ETHER_CREDENTIAL_INVALID",
-      );
-    }
-
-    const etherUser = details?.user ?? {};
-    if (etherUser.id !== etherUserId) {
-      throw new ApiError(
-        422,
-        "Esta credencial pertence a outro cliente da Ether, não ao ID informado.",
-        "ETHER_CREDENTIAL_OWNER_MISMATCH",
-      );
-    }
-    const etherTaxId = onlyDigits(etherUser.userProfiles?.[0]?.taxId);
-    const localTaxId = onlyDigits(profile.tax_id);
-    if (localTaxId && etherTaxId && localTaxId !== etherTaxId) {
-      throw new ApiError(
-        422,
-        "O CPF/CNPJ do cliente na Ether não bate com o do usuário na LivrePay.",
-        "ETHER_CREDENTIAL_TAXID_MISMATCH",
-      );
-    }
-
-    const saved = await storeCredential({
-      userId: targetUserId,
-      etherUserId,
-      clientId,
-      clientSecret,
-      actorId: req.userId,
-    });
-
-    // Vínculo do perfil (se ainda não existia). ether_* só service_role escreve.
-    if (!profile.ether_user_id) {
-      await withService(async (client) => {
-        await client.query(
-          `update public.profiles set ether_user_id = $2 where id = $1 and ether_user_id is null`,
-          [targetUserId, etherUserId],
-        );
-      });
-    }
-
-    console.log("ether_credential_stored", { targetUserId, etherUserId, actorId: req.userId });
-    res.status(201).json({
-      user_id: saved.user_id,
-      ether_user_id: saved.ether_user_id,
-      client_id: saved.client_id,
-      status: saved.status,
-      created_at: saved.created_at,
-    });
   }),
 );
 

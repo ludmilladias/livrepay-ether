@@ -95,6 +95,48 @@ async function getParticipantToken() {
   return cachedParticipantToken.token;
 }
 
+/**
+ * Token do tenant (opera SOMENTE a conta da própria LivrePay). Quem chama já
+ * decidiu que o usuário pode operar essa conta — ver getUserEtherToken().
+ */
+export function getTenantToken() {
+  return getParticipantToken();
+}
+
+let cachedTenantAccount = null; // { value, expiresAt }
+const TENANT_ACCOUNT_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Conta da Ether que a credencial do tenant opera, lida na própria Ether
+ * (GET /users/bank-account/details com o token do tenant). O ID vem da Ether,
+ * nunca digitado por humano: é a âncora do vínculo da conta da casa.
+ * Devolve { etherUserId, name, taxId }.
+ */
+export async function getTenantAccount() {
+  if (cachedTenantAccount && cachedTenantAccount.expiresAt > Date.now()) return cachedTenantAccount.value;
+  const details = await getBankAccountDetails(await getParticipantToken());
+  const user = details?.user ?? {};
+  // profiles.ether_user_id é uuid: um ID fora do formato não pode virar vínculo.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(user.id ?? ""))) {
+    throw new EtherError(502, { error: "ContaDoTenantSemId" });
+  }
+  const profile = user.userProfiles?.[0] ?? {};
+  const value = {
+    etherUserId: String(user.id).toLowerCase(),
+    name: profile.name ?? user.name ?? null,
+    taxId: String(profile.taxId ?? "").replace(/\D/g, "") || null,
+  };
+  cachedTenantAccount = { value, expiresAt: Date.now() + TENANT_ACCOUNT_TTL_MS };
+  return value;
+}
+
+/** Só para teste: limpa (ou fixa) a conta do tenant em cache e o token. Inerte em produção. */
+export function setTenantAccountCacheForTest(value) {
+  if (config.isProduction) return;
+  cachedTenantAccount = value ? { value, expiresAt: Date.now() + TENANT_ACCOUNT_TTL_MS } : null;
+  cachedParticipantToken = null;
+}
+
 // ---------------------------------------------------------------------------
 // Sub-conta (cliente final) — autenticação via Cognito
 // ---------------------------------------------------------------------------

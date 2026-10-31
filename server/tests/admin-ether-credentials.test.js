@@ -1,4 +1,5 @@
-// Teste offline das rotas de admin para credenciais da Ether por cliente.
+// Teste offline das rotas de admin para credenciais da Ether: vínculo da conta da
+// casa (credencial do tenant, que já fica no servidor) e lista/revogação do cofre.
 // Banco falso em pool.connect; fetch interceptado para a Ether.
 // Uso: node server/tests/admin-ether-credentials.test.js
 import crypto from "node:crypto";
@@ -28,18 +29,29 @@ const check = (label, cond, detail) => {
 const ADMIN = "11111111-1111-1111-1111-111111111111";
 const COMPLIANCE = "22222222-2222-2222-2222-222222222222";
 const CLIENTE = "33333333-3333-3333-3333-333333333333";
-const LIGADO = "44444444-4444-4444-4444-444444444444";
-const ETHER_CLIENTE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const ADMIN_LIGADO_OUTRA = "44444444-4444-4444-4444-444444444444";
+const ADMIN_2 = "55555555-5555-5555-5555-555555555555";
+const ETHER_CASA = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const ETHER_OUTRO = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const SECRET = "segredo-do-cliente-xyz";
 
-const roles = { [ADMIN]: ["admin"], [COMPLIANCE]: ["compliance"] };
-const profiles = {
-  [CLIENTE]: { id: CLIENTE, tax_id: "52998224725", ether_user_id: null },
-  [LIGADO]: { id: LIGADO, tax_id: "11144477735", ether_user_id: ETHER_OUTRO },
+const roles = {
+  [ADMIN]: ["admin"],
+  [COMPLIANCE]: ["compliance"],
+  [ADMIN_LIGADO_OUTRA]: ["admin"],
+  [ADMIN_2]: ["admin"],
 };
-const vaultRows = [];
+const profiles = {
+  [ADMIN]: { id: ADMIN, ether_user_id: null },
+  [COMPLIANCE]: { id: COMPLIANCE, ether_user_id: null },
+  [CLIENTE]: { id: CLIENTE, ether_user_id: null },
+  [ADMIN_LIGADO_OUTRA]: { id: ADMIN_LIGADO_OUTRA, ether_user_id: ETHER_OUTRO },
+  [ADMIN_2]: { id: ADMIN_2, ether_user_id: null },
+};
+const vaultRows = [
+  { user_id: CLIENTE, ether_user_id: ETHER_OUTRO, client_id: "client-x", status: "active", created_at: new Date() },
+];
 const profileUpdates = [];
+const unlinks = [];
 
 pool.connect = async () => {
   let claim = null;
@@ -48,18 +60,31 @@ pool.connect = async () => {
       const q = String(sql).replace(/\s+/g, " ").trim();
       if (q.startsWith("SELECT set_config")) { claim = params[0]; return { rows: [] }; }
       if (/^(BEGIN|COMMIT|ROLLBACK|SET LOCAL)/i.test(q)) return { rows: [] };
+      if (q.includes("as is_admin")) {
+        const p = profiles[params[0]];
+        return { rows: p ? [{ ...p, is_admin: (roles[p.id] ?? []).includes("admin") }] : [] };
+      }
       if (q.includes("from public.user_roles")) return { rows: [{ roles: roles[claim] ?? [] }] };
-      if (q.includes("from public.profiles where id")) return { rows: profiles[params[0]] ? [profiles[params[0]]] : [] };
-      if (q.includes("update public.profiles set ether_user_id")) { profileUpdates.push(params); return { rows: [] }; }
+      if (q.includes("where ether_user_id = $1 and id <> $2")) {
+        return { rows: Object.values(profiles).filter((p) => p.ether_user_id === params[0] && p.id !== params[1]) };
+      }
+      if (q.includes("select id from public.profiles where ether_user_id = $1")) {
+        return { rows: Object.values(profiles).filter((p) => p.ether_user_id === params[0]) };
+      }
+      if (q.includes("update public.profiles set ether_user_id = null")) {
+        const p = Object.values(profiles).find((x) => x.ether_user_id === params[0]);
+        if (p) { p.ether_user_id = null; unlinks.push(p.id); }
+        return { rows: p ? [{ id: p.id }] : [] };
+      }
+      if (q.includes("update public.profiles set ether_user_id")) {
+        profileUpdates.push(params);
+        const p = profiles[params[0]];
+        if (p && p.ether_user_id === null) p.ether_user_id = params[1];
+        return { rows: [] };
+      }
       if (q.includes("update vault.ether_credentials")) {
         for (const r of vaultRows) if (r.user_id === params[0] && r.status !== "revoked") { r.status = "revoked"; r.revoked_at = new Date(); }
         return { rows: [] };
-      }
-      if (q.includes("insert into vault.ether_credentials")) {
-        const [user_id, ether_user_id, client_id, ciphertext, , , , created_by] = params;
-        const r = { id: `cred-${vaultRows.length + 1}`, user_id, ether_user_id, client_id, ciphertext, created_by, status: "active", created_at: new Date() };
-        vaultRows.push(r);
-        return { rows: [{ id: r.id, user_id, ether_user_id, client_id, status: "active", created_at: r.created_at }] };
       }
       if (q.includes("from vault.ether_credentials c")) {
         return { rows: vaultRows.filter((r) => r.status !== "revoked").map(({ user_id, ether_user_id, client_id, status, created_at }) => ({ user_id, ether_user_id, client_id, status, created_at })) };
@@ -70,29 +95,27 @@ pool.connect = async () => {
   };
 };
 
-// Ether falsa: cada clientId "pertence" a um cliente.
-const OWNERS = {
-  "client-ok": { id: ETHER_CLIENTE, taxId: "529.982.247-25" },
-  "client-de-outro": { id: ETHER_OUTRO, taxId: "529.982.247-25" },
-  "client-cpf-diferente": { id: ETHER_CLIENTE, taxId: "111.444.777-35" },
-};
+// Ether falsa: a credencial do tenant opera a conta da casa.
 const realFetch = globalThis.fetch;
 const etherCalls = [];
+let etherDown = false;
 globalThis.fetch = async (url, options = {}) => {
   const u = String(url);
   if (u.startsWith("https://ether.invalid/auth/authenticate")) {
     const { clientId, clientSecret } = JSON.parse(options.body);
     etherCalls.push(`auth:${clientId}`);
-    if (!OWNERS[clientId] || clientSecret !== SECRET) {
+    if (etherDown) return new Response("{}", { status: 500 });
+    if (clientId !== "tenant-client-id" || clientSecret !== "tenant-secret-nao-usar") {
       return new Response(JSON.stringify({ message: "invalid" }), { status: 400 });
     }
-    return new Response(JSON.stringify({ access_token: `tok:${clientId}`, expires_in: 3600 }), { status: 200 });
+    return new Response(JSON.stringify({ access_token: "tok:tenant", expires_in: 3600 }), { status: 200 });
   }
   if (u.startsWith("https://ether.invalid/users/bank-account/details")) {
-    const token = String(options.headers?.Authorization ?? "").replace("Bearer tok:", "");
-    etherCalls.push(`details:${token}`);
-    const owner = OWNERS[token];
-    return new Response(JSON.stringify({ user: { id: owner.id, userProfiles: [{ taxId: owner.taxId }] } }), { status: 200 });
+    etherCalls.push(`details:${options.headers?.Authorization}`);
+    return new Response(
+      JSON.stringify({ user: { id: ETHER_CASA, userProfiles: [{ name: "LIVREPAY TECNOLOGIA FINANCEIRA LTDA", taxId: "12.345.678/0001-90" }] } }),
+      { status: 200 },
+    );
   }
   return realFetch(url, options);
 };
@@ -113,54 +136,85 @@ const call = async (method, path, userId, body) => {
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
-  return { status: res.status, text, json: text ? JSON.parse(text) : null };
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* 404 padrão do Express é HTML */ }
+  return { status: res.status, text, json };
 };
-const body = (clientId, over = {}) => ({ etherUserId: ETHER_CLIENTE, clientId, clientSecret: SECRET, ...over });
+const link = (target, actor) => call("POST", `/admin/users/${target}/link-house-account`, actor);
 
 // --- quem pode ------------------------------------------------------------------
-let r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, null, body("client-ok"));
+let r = await link(ADMIN, null);
 check("sem login -> 401", r.status === 401, r.text);
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, CLIENTE, body("client-ok"));
+r = await link(ADMIN, CLIENTE);
 check("cliente comum -> 403", r.status === 403, r.text);
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, COMPLIANCE, body("client-ok"));
+r = await link(ADMIN, COMPLIANCE);
 check("compliance (sem admin) -> 403", r.status === 403, r.text);
+r = await call("GET", "/admin/house-account", COMPLIANCE);
+check("compliance não vê a conta da casa -> 403", r.status === 403, r.text);
 check("nenhuma chamada à Ether antes de autorizar", etherCalls.length === 0, JSON.stringify(etherCalls));
 
+// --- a rota antiga de colar credencial não existe mais ---------------------------
+r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, ADMIN, { etherUserId: ETHER_CASA, clientId: "x", clientSecret: "y" });
+check("POST de clientId/clientSecret colado não existe mais -> 404", r.status === 404, String(r.status));
+
 // --- validações -----------------------------------------------------------------
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, ADMIN, body("client-ok", { etherUserId: "nao-e-uuid" }));
-check("userId da Ether inválido -> 400", r.status === 400, r.text);
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, ADMIN, body("client-ok", { clientSecret: "errado-123" }));
-check("Ether recusa a credencial -> 422 e nada gravado", r.status === 422 && r.json.code === "ETHER_CREDENTIAL_INVALID" && vaultRows.length === 0, r.text);
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, ADMIN, body("client-de-outro"));
-check("credencial de outro cliente da Ether -> 422 e nada gravado", r.status === 422 && r.json.code === "ETHER_CREDENTIAL_OWNER_MISMATCH" && vaultRows.length === 0, r.text);
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, ADMIN, body("client-cpf-diferente"));
-check("CPF da Ether diferente do da LivrePay -> 422 e nada gravado", r.status === 422 && r.json.code === "ETHER_CREDENTIAL_TAXID_MISMATCH" && vaultRows.length === 0, r.text);
-r = await call("POST", `/admin/users/${LIGADO}/ether-credential`, ADMIN, body("client-ok"));
-check("usuário já ligado a outro cliente da Ether -> 409", r.status === 409 && r.json.code === "ETHER_USER_MISMATCH", r.text);
-r = await call("POST", `/admin/users/99999999-9999-9999-9999-999999999999/ether-credential`, ADMIN, body("client-ok"));
+r = await link(CLIENTE, ADMIN);
+check("cliente comum não pode operar a conta da casa -> 422", r.status === 422 && r.json.code === "HOUSE_OPERATOR_NOT_ADMIN", r.text);
+r = await link(ADMIN_LIGADO_OUTRA, ADMIN);
+check("admin já ligado a outra conta da Ether -> 409", r.status === 409 && r.json.code === "ETHER_USER_MISMATCH", r.text);
+r = await link("99999999-9999-9999-9999-999999999999", ADMIN);
 check("usuário inexistente -> 404", r.status === 404, r.text);
+r = await link("nao-e-uuid", ADMIN);
+check("ID de usuário malformado -> 400 (não 500)", r.status === 400, r.text);
+check("nada foi gravado nas recusas", profileUpdates.length === 0, JSON.stringify(profileUpdates));
+
+// --- conta da casa (antes do vínculo) ---------------------------------------------
+r = await call("GET", "/admin/house-account", ADMIN);
+check("mostra a conta lida na Ether, ainda sem vínculo",
+  r.status === 200 && r.json.ether_user_id === ETHER_CASA && r.json.tax_id === "12345678000190" && r.json.linked_user_id === null, r.text);
+check("autenticou com a credencial do tenant que já está no servidor", etherCalls.includes("auth:tenant-client-id"));
 
 // --- sucesso --------------------------------------------------------------------
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential`, ADMIN, body("client-ok"));
-check("admin cadastra credencial válida -> 201", r.status === 201 && r.json.client_id === "client-ok" && r.json.ether_user_id === ETHER_CLIENTE, r.text);
-check("resposta não traz o segredo nem texto cifrado", !r.text.includes(SECRET) && !("secret" in (r.json ?? {})) && !r.text.includes("ciphertext"));
-check("cofre guarda o segredo cifrado, com o admin como autor",
-  vaultRows.length === 1 && vaultRows[0].created_by === ADMIN && !Buffer.from(vaultRows[0].ciphertext).toString("latin1").includes(SECRET));
-check("perfil ligado ao cliente da Ether", profileUpdates.length === 1 && profileUpdates[0][1] === ETHER_CLIENTE);
+r = await link(ADMIN, ADMIN);
+check("admin vincula a conta da casa a um admin -> 200", r.status === 200 && r.json.linked_user_id === ADMIN && r.json.ether_user_id === ETHER_CASA, r.text);
+check("perfil gravado com o ID vindo da Ether (não digitado)", profileUpdates.length === 1 && profileUpdates[0][0] === ADMIN && profileUpdates[0][1] === ETHER_CASA);
+r = await call("GET", "/admin/house-account", ADMIN);
+check("conta da casa aparece ligada ao admin", r.status === 200 && r.json.linked_user_id === ADMIN, r.text);
+r = await link(ADMIN, ADMIN);
+check("vincular de novo o mesmo usuário é idempotente", r.status === 200, r.text);
+r = await link(ADMIN_2, ADMIN);
+check("segundo usuário não pega a conta da casa -> 409", r.status === 409 && r.json.code === "HOUSE_ALREADY_LINKED", r.text);
+check("o segundo usuário continua sem vínculo", profiles[ADMIN_2].ether_user_id === null);
 
+// --- desvínculo -----------------------------------------------------------------
+r = await call("POST", "/admin/house-account/unlink", COMPLIANCE);
+check("compliance não desvincula -> 403", r.status === 403 && unlinks.length === 0, r.text);
+r = await call("POST", "/admin/house-account/unlink", ADMIN);
+check("admin desvincula -> 200 e o operador perde o vínculo", r.status === 200 && unlinks[0] === ADMIN && profiles[ADMIN].ether_user_id === null, r.text);
+r = await link(ADMIN_2, ADMIN);
+check("depois do desvínculo, outro admin pode assumir", r.status === 200 && profiles[ADMIN_2].ether_user_id === ETHER_CASA, r.text);
+
+// --- Ether fora do ar -----------------------------------------------------------
+const { setTenantAccountCacheForTest } = await import("../src/ether.js");
+setTenantAccountCacheForTest(null);
+etherDown = true;
+r = await call("GET", "/admin/house-account", ADMIN);
+check("Ether indisponível -> 424 com mensagem (não 502, que a borda troca por HTML)", r.status === 424 && r.json.code === "HOUSE_ACCOUNT_UNAVAILABLE", r.text);
+etherDown = false;
+
+// --- cofre: lista e revogação ---------------------------------------------------
 r = await call("GET", "/admin/ether-credentials", ADMIN);
-check("lista de credenciais só com metadados", r.status === 200 && r.json.length === 1 && !r.text.includes(SECRET) && !r.text.includes("ciphertext"), r.text);
+check("lista de credenciais só com metadados", r.status === 200 && r.json.length === 1 && !r.text.includes("ciphertext"), r.text);
 r = await call("GET", "/admin/ether-credentials", COMPLIANCE);
 check("compliance não lista credenciais -> 403", r.status === 403, r.text);
-
-r = await call("POST", `/admin/users/${CLIENTE}/ether-credential/revoke`, ADMIN);
-check("admin revoga -> 204 e credencial sai da lista", r.status === 204 && vaultRows[0].status === "revoked", r.text);
 r = await call("POST", `/admin/users/${CLIENTE}/ether-credential/revoke`, COMPLIANCE);
 check("compliance não revoga -> 403", r.status === 403, r.text);
+r = await call("POST", `/admin/users/${CLIENTE}/ether-credential/revoke`, ADMIN);
+check("admin revoga -> 204", r.status === 204 && vaultRows[0].status === "revoked", r.text);
 
 // --- logs -----------------------------------------------------------------------
 const logText = logs.join("\n");
-check("log não contém segredo nem token", !logText.includes(SECRET) && !logText.includes("tok:client"));
+check("log não contém segredo nem token do tenant", !logText.includes("tenant-secret-nao-usar") && !logText.includes("tok:tenant"));
 
 server.close();
 globalThis.fetch = realFetch;

@@ -738,7 +738,7 @@ export function onboardingProviderError(error) {
  */
 export async function createAndLinkEtherAccount(
   { userId, payload, taxId, phone, userAgent },
-  { createUserProfile, acceptTerms, submitPepDeclaration, withService },
+  { createUserProfile, acceptTerms, submitPepDeclaration, withService, isHouseAccount },
 ) {
   let etherResult;
   try {
@@ -756,6 +756,27 @@ export async function createAndLinkEtherAccount(
   // `recovery: true` = a Ether achou um cadastro incompleto por e-mail e o
   // reaproveitou (upsert) — é o sinal de que isto é uma reconciliação.
   const recovered = etherResult.recovery === true;
+
+  // A Ether faz upsert por e-mail: um cadastro comum com o e-mail da conta da
+  // LivrePay receberia o ID da conta da CASA. Esse ID só é ligado pela rota admin
+  // de vínculo — aqui é recusado. Se não der para conferir, falha fechado.
+  if (isHouseAccount) {
+    let house;
+    try {
+      house = await isHouseAccount(etherUserId);
+    } catch (error) {
+      console.error("Não foi possível conferir a conta da casa no onboarding", { userId, ...errorLogFields(error) });
+      throw new ApiError(
+        503,
+        "Cadastro iniciado, mas não foi possível concluí-lo agora. Tente novamente em instantes.",
+        "ETHER_LINK_PENDING",
+      );
+    }
+    if (house) {
+      console.error("ETHER_HOUSE_COLLISION: onboarding comum recebeu o ID da conta da casa", { userId, etherUserId });
+      throw new ApiError(409, "Este cadastro já está vinculado a outra conta.", "ETHER_ACCOUNT_ALREADY_LINKED");
+    }
+  }
 
   try {
     // service_role pode escrever ether_* (o usuário não: trigger + RLS).
@@ -835,7 +856,7 @@ authRouter.post(
   onboardingUserLimiter,
   validate(onboardingSchema),
   asyncRoute(async (req, res) => {
-    const { createUserProfile, acceptTerms, submitPepDeclaration } = await import("../ether.js");
+    const { createUserProfile, acceptTerms, submitPepDeclaration, getTenantAccount } = await import("../ether.js");
     const b = req.body;
 
     // Verifica se já fez onboarding.
@@ -870,7 +891,13 @@ authRouter.post(
 
     const linked = await createAndLinkEtherAccount(
       { userId: req.userId, payload, taxId: b.taxId, phone: b.phone, userAgent: req.headers["user-agent"] },
-      { createUserProfile, acceptTerms, submitPepDeclaration, withService },
+      {
+        createUserProfile,
+        acceptTerms,
+        submitPepDeclaration,
+        withService,
+        isHouseAccount: async (id) => String(id).toLowerCase() === (await getTenantAccount()).etherUserId,
+      },
     );
 
     // `documentChecklist.pending` (ex.: CARTEIRA_IDENTIDADE, COMPROVANTE_RESIDENCIA,

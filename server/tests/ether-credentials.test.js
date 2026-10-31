@@ -29,6 +29,10 @@ for (const m of ["log", "error", "warn"]) console[m] = (...a) => logs.push(JSON.
 // --- banco falso: vault.ether_credentials em memória -------------------------
 let rows = [];
 let nextId = 1;
+// profiles.ether_user_id por usuário (vínculo com a conta na Ether).
+const ETHER_CASA = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const linked = {};
+const admins = new Set(); // usuários com papel admin em user_roles
 pool.connect = async () => ({
   query: async (sql, params = []) => {
     const q = String(sql).replace(/\s+/g, " ");
@@ -51,6 +55,10 @@ pool.connect = async () => ({
     if (q.includes("from vault.ether_credentials") && q.includes("status = 'active'")) {
       return { rows: rows.filter((r) => r.user_id === params[0] && r.status === "active") };
     }
+    if (q.includes("as is_admin") && q.includes("from public.profiles p")) {
+      const u = params[0];
+      return { rows: u in linked ? [{ ether_user_id: linked[u], is_admin: admins.has(u) }] : [] };
+    }
     throw new Error(`query inesperada: ${q.slice(0, 80)}`);
   },
   release: () => {},
@@ -59,12 +67,18 @@ pool.connect = async () => ({
 // --- fetch falso para /auth/authenticate ---------------------------------------
 const authCalls = [];
 let authMode = "ok";
+let detailsDown = false;
 globalThis.fetch = async (url, options) => {
   if (String(url).endsWith("/auth/authenticate")) {
     const body = JSON.parse(options.body);
     authCalls.push(body.clientId);
     if (authMode === "reject") return new Response(JSON.stringify({ message: "AUTH_KEY_001" }), { status: 401 });
     return new Response(JSON.stringify({ access_token: `tok-${body.clientId}-${authCalls.length}`, expires_in: 3600, token_type: "Bearer" }), { status: 200 });
+  }
+  // Com o token do tenant, a Ether responde a conta da casa.
+  if (String(url).endsWith("/users/bank-account/details")) {
+    if (detailsDown) return new Response("{}", { status: 500 });
+    return new Response(JSON.stringify({ user: { id: ETHER_CASA, userProfiles: [{ taxId: "12345678000190" }] } }), { status: 200 });
   }
   throw new Error(`fetch inesperado: ${url}`);
 };
@@ -130,6 +144,39 @@ check("credencial recusada fica 'suspect'", rows.find((r) => r.user_id === BIA.u
 authMode = "ok";
 check("depois de suspeita, não opera (sem fallback para o tenant)",
   await rejects(vault.getUserEtherToken(BIA.userId), vault.CredentialUnavailableError) && authCalls.length === before + 1);
+
+// --- conta da casa (credencial do tenant) -----------------------------------------
+const { setTenantAccountCacheForTest } = await import("../src/ether.js");
+const CASA = "u-casa";
+linked[CASA] = ETHER_CASA;
+admins.add(CASA);
+linked[ANA.userId] = ANA.etherUserId;
+vault.clearTokenCacheForTest();
+setTenantAccountCacheForTest(null);
+const tCasa = await vault.getUserEtherToken(CASA);
+check("operador ligado à conta da casa recebe o token do tenant", tCasa.startsWith(`tok-${config.ether.clientId}-`), tCasa);
+const tAna = await vault.getUserEtherToken(ANA.userId);
+check("cliente ligado a outra conta continua no próprio token, nunca no do tenant", !tAna.startsWith(`tok-${config.ether.clientId}-`), tAna);
+check("usuário sem vínculo nem credencial não opera (sem fallback para o tenant)",
+  await rejects(vault.getUserEtherToken("u-sem-nada"), vault.CredentialUnavailableError));
+linked["u-intruso"] = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+check("vínculo com outra conta da Ether não abre o token do tenant",
+  await rejects(vault.getUserEtherToken("u-intruso"), vault.CredentialUnavailableError));
+// Ligado à conta da casa, mas sem papel admin (onboarding comum que caísse no ID
+// da casa, ou admin que saiu da empresa): não recebe o token do tenant.
+linked["u-sem-papel"] = ETHER_CASA;
+check("ligado à conta da casa SEM papel admin não recebe o token do tenant",
+  await rejects(vault.getUserEtherToken("u-sem-papel"), vault.CredentialUnavailableError));
+admins.delete(CASA);
+check("ex-admin perde o token do tenant na hora (papel checado a cada chamada)",
+  await rejects(vault.getUserEtherToken(CASA), vault.CredentialUnavailableError));
+admins.add(CASA);
+
+setTenantAccountCacheForTest(null);
+detailsDown = true;
+check("Ether fora do ar: o operador da casa é negado, não liberado",
+  await rejects(vault.getUserEtherToken(CASA), vault.CredentialUnavailableError));
+detailsDown = false;
 
 // --- logs -----------------------------------------------------------------------
 const logText = logs.join("\n");
