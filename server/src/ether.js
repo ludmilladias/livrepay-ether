@@ -105,6 +105,8 @@ export function getTenantToken() {
 
 let cachedTenantAccount = null; // { value, expiresAt }
 const TENANT_ACCOUNT_TTL_MS = 10 * 60 * 1000;
+let tenantAccountFailure = null; // { error, until }
+const TENANT_FAILURE_BACKOFF_MS = 30 * 1000;
 
 /**
  * Conta da Ether que a credencial do tenant opera, lida na própria Ether
@@ -114,7 +116,19 @@ const TENANT_ACCOUNT_TTL_MS = 10 * 60 * 1000;
  */
 export async function getTenantAccount() {
   if (cachedTenantAccount && cachedTenantAccount.expiresAt > Date.now()) return cachedTenantAccount.value;
-  const details = await getBankAccountDetails(await getParticipantToken());
+  // Falha recente: não martela a Ether (cada tela e cada retry chamariam de novo).
+  if (tenantAccountFailure && tenantAccountFailure.until > Date.now()) throw tenantAccountFailure.error;
+  let details;
+  try {
+    details = await getBankAccountDetails(await getParticipantToken().catch((error) => {
+      error.step = "authenticate";
+      throw error;
+    }));
+  } catch (error) {
+    error.step ??= "bank-account/details";
+    tenantAccountFailure = { error, until: Date.now() + TENANT_FAILURE_BACKOFF_MS };
+    throw error;
+  }
   const user = details?.user ?? {};
   // profiles.ether_user_id é uuid: um ID fora do formato não pode virar vínculo.
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(user.id ?? ""))) {
@@ -134,6 +148,7 @@ export async function getTenantAccount() {
 export function setTenantAccountCacheForTest(value) {
   if (config.isProduction) return;
   cachedTenantAccount = value ? { value, expiresAt: Date.now() + TENANT_ACCOUNT_TTL_MS } : null;
+  tenantAccountFailure = null;
   cachedParticipantToken = null;
 }
 

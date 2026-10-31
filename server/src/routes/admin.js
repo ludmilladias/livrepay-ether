@@ -5,6 +5,7 @@ import { ApiError, asyncRoute, requireAuth, requireRole, validate } from "../mid
 import { runProviderEvent } from "./webhook.js";
 import { getTenantAccount } from "../ether.js";
 import { revokeCredential } from "../etherCredentials.js";
+import { etherErrorFields } from "../safeLog.js";
 
 export const adminRouter = Router();
 
@@ -257,7 +258,7 @@ async function tenantAccountOrFail() {
   try {
     return await getTenantAccount();
   } catch (error) {
-    console.error("Conta do tenant indisponível na Ether", { status: error?.status });
+    console.error("Conta do tenant indisponível na Ether", { step: error?.step, ...etherErrorFields(error) });
     throw new ApiError(
       424,
       "Não foi possível consultar a conta da LivrePay na Ether agora. Tente de novo em instantes.",
