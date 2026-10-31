@@ -62,6 +62,7 @@ pool.connect = async () => {
       const q = String(sql).replace(/\s+/g, " ").trim();
       if (q.startsWith("SELECT set_config")) { claim = params[0]; return { rows: [] }; }
       if (/^(BEGIN|COMMIT|ROLLBACK|SET LOCAL)/i.test(q)) return { rows: [] };
+      if (q.includes("join public.accounts a")) return { rows: [{ balance_cents: "0" }] };
       if (q.includes("as is_admin")) {
         const p = profiles[params[0]];
         return { rows: p ? [{ ...p, is_admin: (roles[p.id] ?? []).includes("admin") }] : [] };
@@ -111,6 +112,10 @@ globalThis.fetch = async (url, options = {}) => {
       return new Response(JSON.stringify({ message: "invalid" }), { status: 400 });
     }
     return new Response(JSON.stringify({ access_token: "tok:tenant", expires_in: 3600 }), { status: 200 });
+  }
+  if (u.startsWith("https://ether.invalid/account-balance")) {
+    etherCalls.push(`balance:${options.headers?.Authorization}`);
+    return new Response(JSON.stringify({ balance: 0.9 }), { status: 200 });
   }
   if (u.startsWith("https://ether.invalid/users/bank-account/details")) {
     etherCalls.push(`details:${options.headers?.Authorization}`);
@@ -187,6 +192,15 @@ check("vincular de novo o mesmo usuário é idempotente", r.status === 200, r.te
 r = await link(ADMIN_2, ADMIN);
 check("segundo usuário não pega a conta da casa -> 409", r.status === 409 && r.json.code === "HOUSE_ALREADY_LINKED", r.text);
 check("o segundo usuário continua sem vínculo", profiles[ADMIN_2].ether_user_id === null);
+
+// --- conferência de saldo (só leitura) ---------------------------------------------
+r = await call("GET", "/admin/house-account/balance", COMPLIANCE);
+check("compliance não vê o saldo da casa -> 403", r.status === 403, r.text);
+const gravacoesAntes = profileUpdates.length;
+r = await call("GET", "/admin/house-account/balance", ADMIN);
+check("conferência devolve o saldo cru da Ether e o do ledger", r.status === 200 && r.json.ether_balance_raw === 0.9 && r.json.local_balance_cents === 0, r.text);
+check("saldo da Ether lido com o token do tenant", etherCalls.includes("balance:Bearer tok:tenant"), JSON.stringify(etherCalls));
+check("conferência não grava nada", profileUpdates.length === gravacoesAntes);
 
 // --- desvínculo -----------------------------------------------------------------
 r = await call("POST", "/admin/house-account/unlink", COMPLIANCE);

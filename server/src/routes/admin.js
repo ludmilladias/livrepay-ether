@@ -3,8 +3,9 @@ import { z } from "zod";
 import { withService, withUser } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, requireRole, validate } from "../middleware.js";
 import { runProviderEvent } from "./webhook.js";
-import { getHouseEtherUserId } from "../ether.js";
+import { getAccountBalance, getHouseEtherUserId, getTenantToken } from "../ether.js";
 import { revokeCredential } from "../etherCredentials.js";
+import { etherErrorFields } from "../safeLog.js";
 
 export const adminRouter = Router();
 
@@ -277,6 +278,38 @@ adminRouter.get(
       return rows[0]?.id ?? null;
     });
     res.json({ ether_user_id: house.etherUserId, linked_user_id: linkedUserId });
+  }),
+);
+
+// Conferência (só leitura): saldo da conta da casa na Ether × saldo no ledger do
+// operador vinculado. O valor da Ether vai CRU (a doc não diz se é reais ou
+// centavos) — a unidade é confirmada olhando a tela antes de qualquer lançamento.
+adminRouter.get(
+  "/house-account/balance",
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const house = houseAccountOrFail();
+    let etherBalance;
+    try {
+      const result = await getAccountBalance(await getTenantToken());
+      etherBalance = result?.balance ?? null;
+    } catch (error) {
+      console.error("Saldo da conta da casa indisponível na Ether", etherErrorFields(error));
+      throw new ApiError(424, "A Ether não devolveu o saldo da conta da LivrePay agora.", "HOUSE_BALANCE_UNAVAILABLE");
+    }
+    const local = await withService(async (client) => {
+      const { rows } = await client.query(
+        `select a.balance_cents
+           from public.profiles p
+           join public.accounts a on a.user_id = p.id
+          where p.ether_user_id = $1
+          order by a.created_at
+          limit 1`,
+        [house.etherUserId],
+      );
+      return rows[0]?.balance_cents ?? null;
+    });
+    res.json({ ether_balance_raw: etherBalance, local_balance_cents: local === null ? null : Number(local) });
   }),
 );
 

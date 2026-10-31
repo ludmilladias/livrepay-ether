@@ -198,6 +198,21 @@ export function useHouseAccount() {
   });
 }
 
+/** Conferência: saldo cru da Ether × saldo do ledger do operador da conta da casa. */
+export interface HouseBalance {
+  ether_balance_raw: number | null;
+  local_balance_cents: number | null;
+}
+
+export function useHouseBalance(enabled: boolean) {
+  return useQuery({
+    queryKey: [...houseAccountKey, "balance"],
+    queryFn: () => api.get<HouseBalance>("/admin/house-account/balance"),
+    enabled,
+    retry: false,
+  });
+}
+
 /** Liga a conta da LivrePay a um usuário admin. Sem segredo no corpo: o servidor já tem a credencial. */
 export function useLinkHouseAccount() {
   const queryClient = useQueryClient();

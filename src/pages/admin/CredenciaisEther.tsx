@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import {
   useAdminUsers, useEtherCredentials, useHouseAccount, useLinkHouseAccount, useRevokeEtherCredential,
-  useUnlinkHouseAccount,
+  useUnlinkHouseAccount, useHouseBalance,
   type AdminUser, type EtherCredential,
 } from "@/hooks/use-admin"
 
@@ -35,6 +35,7 @@ const CredenciaisEther = () => {
   const link = useLinkHouseAccount()
   const revoke = useRevokeEtherCredential()
   const unlink = useUnlinkHouseAccount()
+  const balance = useHouseBalance(Boolean(house.data?.linked_user_id))
 
   const [operatorId, setOperatorId] = useState<string>("")
   const [confirming, setConfirming] = useState(false)
@@ -123,6 +124,31 @@ const CredenciaisEther = () => {
                   <Button size="sm" variant="ghost" disabled={unlink.isPending} onClick={() => setUnlinking(true)}>
                     Desvincular
                   </Button>
+                  <div className="basis-full pt-3">
+                    <p className="text-muted-foreground mb-1">Conferência de saldo</p>
+                    {balance.isLoading ? (
+                      <p className="text-muted-foreground">Consultando a Ether…</p>
+                    ) : balance.isError ? (
+                      <p role="alert" className="text-destructive">
+                        {balance.error instanceof Error ? balance.error.message : "Não foi possível consultar o saldo."}
+                      </p>
+                    ) : balance.data ? (
+                      <dl className="grid gap-2 sm:grid-cols-2">
+                        <div>
+                          <dt className="text-muted-foreground">Ether (valor devolvido pela API)</dt>
+                          <dd className="font-mono">{String(balance.data.ether_balance_raw ?? "—")}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">LivrePay (ledger)</dt>
+                          <dd className="font-mono">
+                            {balance.data.local_balance_cents === null
+                              ? "—"
+                              : (balance.data.local_balance_cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                          </dd>
+                        </div>
+                      </dl>
+                    ) : null}
+                  </div>
                 </div>
               ) : (
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
