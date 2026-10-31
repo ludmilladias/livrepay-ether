@@ -10,6 +10,7 @@ process.env.JWT_SECRET = "test-jwt-secret-not-real-0123456789";
 process.env.PGUSER = "test";
 process.env.PGPASSWORD = "test";
 process.env.ETHER_CREDENTIALS_KEY = crypto.randomBytes(32).toString("base64");
+process.env.ETHER_HOUSE_USER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 const { pool } = await import("../src/db.js");
 const { config } = await import("../src/config.js");
@@ -146,13 +147,11 @@ check("depois de suspeita, não opera (sem fallback para o tenant)",
   await rejects(vault.getUserEtherToken(BIA.userId), vault.CredentialUnavailableError) && authCalls.length === before + 1);
 
 // --- conta da casa (credencial do tenant) -----------------------------------------
-const { setTenantAccountCacheForTest } = await import("../src/ether.js");
 const CASA = "u-casa";
 linked[CASA] = ETHER_CASA;
 admins.add(CASA);
 linked[ANA.userId] = ANA.etherUserId;
 vault.clearTokenCacheForTest();
-setTenantAccountCacheForTest(null);
 const tCasa = await vault.getUserEtherToken(CASA);
 check("operador ligado à conta da casa recebe o token do tenant", tCasa.startsWith(`tok-${config.ether.clientId}-`), tCasa);
 const tAna = await vault.getUserEtherToken(ANA.userId);
@@ -172,11 +171,21 @@ check("ex-admin perde o token do tenant na hora (papel checado a cada chamada)",
   await rejects(vault.getUserEtherToken(CASA), vault.CredentialUnavailableError));
 admins.add(CASA);
 
-setTenantAccountCacheForTest(null);
-detailsDown = true;
-check("Ether fora do ar: o operador da casa é negado, não liberado",
+const houseBackup = config.ether.houseUserId;
+config.ether.houseUserId = "";
+check("sem ETHER_HOUSE_USER_ID ninguém recebe o token do tenant",
   await rejects(vault.getUserEtherToken(CASA), vault.CredentialUnavailableError));
-detailsDown = false;
+config.ether.houseUserId = houseBackup;
+
+// operationToken: conta não habilitada vira 403 com código, nunca token do tenant.
+try {
+  await vault.operationToken("u-sem-nada");
+  check("operationToken sem conta habilitada lança", false);
+} catch (error) {
+  check("operationToken sem conta habilitada -> 403 ACCOUNT_NOT_ENABLED", error.status === 403 && error.code === "ACCOUNT_NOT_ENABLED");
+}
+check("operationToken do operador da casa devolve o token do tenant",
+  (await vault.operationToken(CASA)).startsWith(`tok-${config.ether.clientId}-`));
 
 // --- logs -----------------------------------------------------------------------
 const logText = logs.join("\n");

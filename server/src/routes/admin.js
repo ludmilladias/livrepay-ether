@@ -3,9 +3,8 @@ import { z } from "zod";
 import { withService, withUser } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, requireRole, validate } from "../middleware.js";
 import { runProviderEvent } from "./webhook.js";
-import { getTenantAccount } from "../ether.js";
+import { getHouseEtherUserId } from "../ether.js";
 import { revokeCredential } from "../etherCredentials.js";
-import { etherErrorFields } from "../safeLog.js";
 
 export const adminRouter = Router();
 
@@ -241,8 +240,8 @@ adminRouter.delete(
 //
 // Ninguém digita clientId/clientSecret: credencial é coisa do servidor.
 //  - Conta da casa (LivrePay): a credencial do tenant já está no ambiente
-//    (ETHER_CLIENT_ID/SECRET). O admin só escolhe QUAL usuário admin opera essa
-//    conta; o ID da conta vem da própria Ether (getTenantAccount), nunca digitado.
+//    (ETHER_CLIENT_ID/SECRET), e o ID da conta também (ETHER_HOUSE_USER_ID). O
+//    admin só escolhe QUAL usuário admin opera essa conta; ninguém digita o ID.
 //  - Clientes: a credencial de cada um chega ao cofre (vault.ether_credentials)
 //    por integração com a Ether — ainda não existe; até lá, cliente não opera.
 //
@@ -252,38 +251,32 @@ adminRouter.delete(
 
 const uuidParam = z.string().uuid();
 
-// 424 e não 502: a borda da DigitalOcean troca 502/503/504 por uma página HTML
-// genérica e a mensagem não chegaria à tela (ver onboardingProviderError).
-async function tenantAccountOrFail() {
-  try {
-    return await getTenantAccount();
-  } catch (error) {
-    console.error("Conta do tenant indisponível na Ether", { step: error?.step, ...etherErrorFields(error) });
+// 424 e não 502/503: a borda da DigitalOcean troca 502/503/504 por uma página
+// HTML genérica e a mensagem não chegaria à tela (ver onboardingProviderError).
+function houseAccountOrFail() {
+  const etherUserId = getHouseEtherUserId();
+  if (!etherUserId) {
     throw new ApiError(
       424,
-      "Não foi possível consultar a conta da LivrePay na Ether agora. Tente de novo em instantes.",
-      "HOUSE_ACCOUNT_UNAVAILABLE",
+      "A conta da LivrePay ainda não está configurada no servidor (ETHER_HOUSE_USER_ID).",
+      "HOUSE_ACCOUNT_NOT_CONFIGURED",
     );
   }
+  return { etherUserId };
 }
 
 adminRouter.get(
   "/house-account",
   requireRole("admin"),
   asyncRoute(async (_req, res) => {
-    const house = await tenantAccountOrFail();
+    const house = houseAccountOrFail();
     const linkedUserId = await withService(async (client) => {
       const { rows } = await client.query(`select id from public.profiles where ether_user_id = $1`, [
         house.etherUserId,
       ]);
       return rows[0]?.id ?? null;
     });
-    res.json({
-      ether_user_id: house.etherUserId,
-      name: house.name,
-      tax_id: house.taxId,
-      linked_user_id: linkedUserId,
-    });
+    res.json({ ether_user_id: house.etherUserId, linked_user_id: linkedUserId });
   }),
 );
 
@@ -293,7 +286,7 @@ adminRouter.post(
   asyncRoute(async (req, res) => {
     const targetUserId = req.params.id;
     if (!uuidParam.safeParse(targetUserId).success) throw new ApiError(400, "ID de usuário inválido");
-    const house = await tenantAccountOrFail();
+    const house = houseAccountOrFail();
 
     await withService(async (client) => {
       const { rows } = await client.query(
@@ -355,7 +348,7 @@ adminRouter.post(
   "/house-account/unlink",
   requireRole("admin"),
   asyncRoute(async (req, res) => {
-    const house = await tenantAccountOrFail();
+    const house = houseAccountOrFail();
     const unlinked = await withService(async (client) => {
       const { rows } = await client.query(
         `update public.profiles set ether_user_id = null, ether_account_status = 'pending'

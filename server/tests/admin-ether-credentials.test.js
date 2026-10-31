@@ -1,5 +1,5 @@
 // Teste offline das rotas de admin para credenciais da Ether: vínculo da conta da
-// casa (credencial do tenant, que já fica no servidor) e lista/revogação do cofre.
+// casa (credencial e ID no ambiente do servidor) e lista/revogação do cofre.
 // Banco falso em pool.connect; fetch interceptado para a Ether.
 // Uso: node server/tests/admin-ether-credentials.test.js
 import crypto from "node:crypto";
@@ -11,6 +11,7 @@ process.env.JWT_SECRET = "test-jwt-secret-not-real-0123456789";
 process.env.PGUSER = "test";
 process.env.PGPASSWORD = "test";
 process.env.ETHER_CREDENTIALS_KEY = crypto.randomBytes(32).toString("base64");
+process.env.ETHER_HOUSE_USER_ID = "CCCCCCCC-cccc-4ccc-8ccc-cccccccccccc"; // normalizado para minúsculas
 
 import express from "express";
 
@@ -18,6 +19,7 @@ const { pool } = await import("../src/db.js");
 const { adminRouter } = await import("../src/routes/admin.js");
 const { errorHandler } = await import("../src/middleware.js");
 const { signAccessToken } = await import("../src/tokens.js");
+const { config } = await import("../src/config.js");
 
 let FAIL = 0;
 const report = [];
@@ -170,9 +172,9 @@ check("nada foi gravado nas recusas", profileUpdates.length === 0, JSON.stringif
 
 // --- conta da casa (antes do vínculo) ---------------------------------------------
 r = await call("GET", "/admin/house-account", ADMIN);
-check("mostra a conta lida na Ether, ainda sem vínculo",
-  r.status === 200 && r.json.ether_user_id === ETHER_CASA && r.json.tax_id === "12345678000190" && r.json.linked_user_id === null, r.text);
-check("autenticou com a credencial do tenant que já está no servidor", etherCalls.includes("auth:tenant-client-id"));
+check("mostra a conta configurada no servidor, ainda sem vínculo",
+  r.status === 200 && r.json.ether_user_id === ETHER_CASA && r.json.linked_user_id === null, r.text);
+check("ver/vincular a conta da casa não chama a Ether", etherCalls.length === 0, JSON.stringify(etherCalls));
 
 // --- sucesso --------------------------------------------------------------------
 r = await link(ADMIN, ADMIN);
@@ -194,13 +196,14 @@ check("admin desvincula -> 200 e o operador perde o vínculo", r.status === 200 
 r = await link(ADMIN_2, ADMIN);
 check("depois do desvínculo, outro admin pode assumir", r.status === 200 && profiles[ADMIN_2].ether_user_id === ETHER_CASA, r.text);
 
-// --- Ether fora do ar -----------------------------------------------------------
-const { setTenantAccountCacheForTest } = await import("../src/ether.js");
-setTenantAccountCacheForTest(null);
-etherDown = true;
+// --- conta da casa não configurada -------------------------------------------------
+const houseBackup = config.ether.houseUserId;
+config.ether.houseUserId = "";
 r = await call("GET", "/admin/house-account", ADMIN);
-check("Ether indisponível -> 424 com mensagem (não 502, que a borda troca por HTML)", r.status === 424 && r.json.code === "HOUSE_ACCOUNT_UNAVAILABLE", r.text);
-etherDown = false;
+check("sem ETHER_HOUSE_USER_ID -> 424 com mensagem (não 502, que a borda troca por HTML)", r.status === 424 && r.json.code === "HOUSE_ACCOUNT_NOT_CONFIGURED", r.text);
+r = await link(ADMIN, ADMIN);
+check("sem ETHER_HOUSE_USER_ID não vincula ninguém", r.status === 424, r.text);
+config.ether.houseUserId = houseBackup;
 
 // --- cofre: lista e revogação ---------------------------------------------------
 r = await call("GET", "/admin/ether-credentials", ADMIN);

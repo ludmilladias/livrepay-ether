@@ -22,13 +22,6 @@ const statusLabel: Record<EtherCredential["status"], string> = {
   suspect: "Recusada pela Ether",
 }
 
-function formatTaxId(value: string | null) {
-  if (!value) return "—"
-  if (value.length === 14) return value.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")
-  if (value.length === 11) return value.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4")
-  return value
-}
-
 const userLabel = (user?: AdminUser) => (user ? `${user.full_name ?? user.email} (${user.email})` : "—")
 
 /**
@@ -106,31 +99,21 @@ const CredenciaisEther = () => {
             Conta da LivrePay
           </CardTitle>
           <CardDescription>
-            Lida na Ether com a credencial da LivrePay que está no servidor. Só um usuário admin pode operá-la.
+            Credencial e ID da conta configurados no servidor. Só um usuário admin pode operá-la.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           {house.isLoading ? (
-            <p className="text-sm text-muted-foreground">Consultando a Ether…</p>
+            <p className="text-sm text-muted-foreground">Carregando…</p>
           ) : house.isError ? (
             <p role="alert" className="text-sm text-destructive">
-              {house.error instanceof Error ? house.error.message : "Não foi possível consultar a conta na Ether."}
+              {house.error instanceof Error ? house.error.message : "Não foi possível carregar a conta da LivrePay."}
             </p>
           ) : house.data ? (
             <>
-              <dl className="grid gap-4 sm:grid-cols-3 text-sm">
-                <div>
-                  <dt className="text-muted-foreground">Empresa</dt>
-                  <dd className="font-medium">{house.data.name ?? "—"}</dd>
-                </div>
-                <div>
-                  <dt className="text-muted-foreground">CNPJ</dt>
-                  <dd className="font-medium">{formatTaxId(house.data.tax_id)}</dd>
-                </div>
-                <div>
-                  <dt className="text-muted-foreground">ID na Ether</dt>
-                  <dd className="font-mono text-xs break-all">{house.data.ether_user_id}</dd>
-                </div>
+              <dl className="text-sm">
+                <dt className="text-muted-foreground">ID da conta na Ether</dt>
+                <dd className="font-mono text-xs break-all">{house.data.ether_user_id}</dd>
               </dl>
 
               {house.data.linked_user_id ? (
@@ -234,8 +217,7 @@ const CredenciaisEther = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Vincular a conta da LivrePay?</AlertDialogTitle>
             <AlertDialogDescription>
-              {userLabel(selected)} passa a operar a conta {house.data?.name ?? "da LivrePay"} (CNPJ{" "}
-              {formatTaxId(house.data?.tax_id ?? null)}). Quem tiver o login desse usuário movimenta o dinheiro da
+              {userLabel(selected)} passa a operar a conta da LivrePay na Ether. Quem tiver o login desse usuário movimenta o dinheiro da
               LivrePay. Só um usuário pode ficar vinculado.
             </AlertDialogDescription>
           </AlertDialogHeader>

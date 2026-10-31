@@ -141,11 +141,11 @@ R=$(req POST /payments "$ALICE_TOKEN" '{"kind":"transferencia","amount_cents":10
 check "$(split_status "$R")" "400" "pagamento PIX sem favorecido é recusado"
 
 if [ "$ETHER_ALLOW_REAL_PAYMENTS" = "1" ]; then
-  # Saldo é sempre 0 aqui (usuário recém-criado, ainda não passou pela seção
-  # de Recebíveis) — execute_payment() recusa por saldo insuficiente ANTES de
-  # chamar withdrawPixToKey(). Nenhum PIX real sai nesta asserção.
+  # Alice não tem conta habilitada no banco parceiro: 403 ACCOUNT_NOT_ENABLED
+  # antes de qualquer débito e de chamar withdrawPixToKey(). (Saldo também é 0.)
+  # Nenhum PIX real sai nesta asserção.
   R=$(req POST "/payments/$PAY_ID/execute" "$ALICE_TOKEN" "")
-  check "$(split_status "$R")" "422" "pagamento sem saldo é bloqueado"
+  check "$(split_status "$R")" "403" "pagamento sem conta habilitada é bloqueado"
 
   R=$(req GET /accounts/balance "$ALICE_TOKEN" "")
   check "$(num "$(split_body "$R")" balance_cents)" "0" "saldo intacto após falha"
@@ -161,8 +161,8 @@ R=$(req POST "/payments/$PAY_ID/execute" "$BOB_TOKEN" "")
 check "$(split_status "$R")" "404" "bob NÃO executa pagamento da alice"
 BOB_ON_ALICE_BODY=$(split_body "$R")
 
-# Execução está DESLIGADA (503, ver executePaymentForUser) — mas a propriedade é
-# checada ANTES do 503, então o isolamento continua provado por esta rota.
+# A propriedade é checada ANTES de resolver a conta na Ether (ver
+# executePaymentForUser), então o isolamento é provado por esta rota.
 # Id inexistente e id de outro dono têm de ser INDISTINGUÍVEIS (mesmo status e
 # mesmo corpo): qualquer diferença vazaria a existência do pagamento.
 R=$(req POST "/payments/00000000-0000-4000-8000-000000000000/execute" "$BOB_TOKEN" "")
@@ -172,14 +172,13 @@ check "$(split_body "$R")" "$BOB_ON_ALICE_BODY" "404 de id inexistente e de outr
 R=$(req POST "/payments/nao-e-uuid/execute" "$BOB_TOKEN" "")
 check "$(split_status "$R")" "404" "id malformado dá 404, não 500"
 
-# Dono do pagamento: passa pela checagem de propriedade e cai no 503. Seguro por
-# construção — o 503 sai antes de qualquer débito ou chamada à Ether. Quando a
-# execução for religada, o esperado aqui vira 422 (saldo 0), como na seção
-# gated por ETHER_ALLOW_REAL_PAYMENTS acima.
+# Dono do pagamento sem conta habilitada no banco parceiro (alice não é o
+# operador da conta da casa nem tem credencial no cofre): 403 antes de qualquer
+# débito ou chamada de dinheiro à Ether.
 R=$(req POST "/payments/$PAY_ID/execute" "$ALICE_TOKEN" "")
-check "$(split_status "$R")" "503" "dono executa o próprio pagamento: 503 (execução desligada)"
+check "$(split_status "$R")" "403" "dono sem conta habilitada: 403 (ACCOUNT_NOT_ENABLED)"
 R=$(req GET /accounts/balance "$ALICE_TOKEN" "")
-check "$(num "$(split_body "$R")" balance_cents)" "0" "saldo intacto após o 503"
+check "$(num "$(split_body "$R")" balance_cents)" "0" "saldo intacto após o 403"
 
 echo "== Pagamentos: Boleto (Contas e Tributos) =="
 VALID_LINE="34191790010104351004791020150008589370000002000"
@@ -201,11 +200,12 @@ if [ "$ETHER_ALLOW_REAL_PAYMENTS" = "1" ]; then
   # digitável fictícia deste teste, os desfechos possíveis contra a Ether real
   # são: 502 (provedor recusa a linha), 409 (valor simulado diverge do
   # informado) ou 422 (linha aceita mas saldo insuficiente — sempre 0 aqui).
+  # Hoje alice nem chega lá: sem conta habilitada, 403 antes até da simulação.
   # Em NENHUM desses casos payBoleto(isSimulation:false) chega a ser chamado:
   # é a única chamada que de fato pagaria o boleto.
   R=$(req POST "/payments/$BOLETO_ID/execute" "$ALICE_TOKEN" "")
   BOLETO_EXEC=$(split_status "$R")
-  { [ "$BOLETO_EXEC" = "422" ] || [ "$BOLETO_EXEC" = "502" ] || [ "$BOLETO_EXEC" = "409" ]; } \
+  { [ "$BOLETO_EXEC" = "403" ] || [ "$BOLETO_EXEC" = "422" ] || [ "$BOLETO_EXEC" = "502" ] || [ "$BOLETO_EXEC" = "409" ]; } \
     && ok "pagamento de boleto é bloqueado sem saldo/provedor ($BOLETO_EXEC)" \
     || bad "pagamento de boleto deveria ser bloqueado (veio $BOLETO_EXEC)"
 

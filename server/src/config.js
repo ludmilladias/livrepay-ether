@@ -89,6 +89,12 @@ export const config = {
     // final no cofre (vault.ether_credentials). Fica só aqui, nunca no banco.
     // Gerar com: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
     credentialsKey: optional("ETHER_CREDENTIALS_KEY", ""),
+    // ID (userId da API = UUID da URL do backoffice) da conta da PRÓPRIA LivrePay
+    // na Ether — a conta que ETHER_CLIENT_ID/SECRET opera. Não é segredo. Vem do
+    // ambiente porque a Ether recusa GET /users/bank-account/details com a
+    // credencial do tenant (400 USR_VAL_008, 2026-10-31). Vazio = conta da casa
+    // desligada: ninguém recebe o token do tenant para movimentar dinheiro.
+    houseUserId: optional("ETHER_HOUSE_USER_ID", "").trim().toLowerCase(),
     // Cognito: a Ether usa AWS Cognito para autenticação de sub-contas.
     // O LivrePay (participant) precisa dessas credenciais para criar/autenticar
     // usuários finais na Ether.
@@ -130,6 +136,10 @@ export const config = {
   // URL pública do frontend: base do link de redefinição enviado por e-mail.
   appUrl: optional("APP_URL", "https://livrepay.digital").replace(/\/+$/, ""),
 };
+
+if (config.ether.houseUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(config.ether.houseUserId)) {
+  throw new Error("ETHER_HOUSE_USER_ID deve ser o UUID da conta da LivrePay na Ether");
+}
 
 if (isProduction && !config.recaptcha.secret) {
   console.warn("RECAPTCHA_SECRET não definida em produção — login/cadastro/esqueci-a-senha sem reCAPTCHA.");

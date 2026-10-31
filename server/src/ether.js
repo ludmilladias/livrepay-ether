@@ -103,53 +103,14 @@ export function getTenantToken() {
   return getParticipantToken();
 }
 
-let cachedTenantAccount = null; // { value, expiresAt }
-const TENANT_ACCOUNT_TTL_MS = 10 * 60 * 1000;
-let tenantAccountFailure = null; // { error, until }
-const TENANT_FAILURE_BACKOFF_MS = 30 * 1000;
-
 /**
- * Conta da Ether que a credencial do tenant opera, lida na própria Ether
- * (GET /users/bank-account/details com o token do tenant). O ID vem da Ether,
- * nunca digitado por humano: é a âncora do vínculo da conta da casa.
- * Devolve { etherUserId, name, taxId }.
+ * ID da conta da própria LivrePay na Ether (a que a credencial do tenant opera),
+ * ou null se ETHER_HOUSE_USER_ID não estiver configurada. Vem do ambiente, ao
+ * lado da credencial: a Ether recusa GET /users/bank-account/details com o token
+ * do tenant (400 USR_VAL_008), então não dá para descobrir pela API.
  */
-export async function getTenantAccount() {
-  if (cachedTenantAccount && cachedTenantAccount.expiresAt > Date.now()) return cachedTenantAccount.value;
-  // Falha recente: não martela a Ether (cada tela e cada retry chamariam de novo).
-  if (tenantAccountFailure && tenantAccountFailure.until > Date.now()) throw tenantAccountFailure.error;
-  let details;
-  try {
-    details = await getBankAccountDetails(await getParticipantToken().catch((error) => {
-      error.step = "authenticate";
-      throw error;
-    }));
-  } catch (error) {
-    error.step ??= "bank-account/details";
-    tenantAccountFailure = { error, until: Date.now() + TENANT_FAILURE_BACKOFF_MS };
-    throw error;
-  }
-  const user = details?.user ?? {};
-  // profiles.ether_user_id é uuid: um ID fora do formato não pode virar vínculo.
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(user.id ?? ""))) {
-    throw new EtherError(502, { error: "ContaDoTenantSemId" });
-  }
-  const profile = user.userProfiles?.[0] ?? {};
-  const value = {
-    etherUserId: String(user.id).toLowerCase(),
-    name: profile.name ?? user.name ?? null,
-    taxId: String(profile.taxId ?? "").replace(/\D/g, "") || null,
-  };
-  cachedTenantAccount = { value, expiresAt: Date.now() + TENANT_ACCOUNT_TTL_MS };
-  return value;
-}
-
-/** Só para teste: limpa (ou fixa) a conta do tenant em cache e o token. Inerte em produção. */
-export function setTenantAccountCacheForTest(value) {
-  if (config.isProduction) return;
-  cachedTenantAccount = value ? { value, expiresAt: Date.now() + TENANT_ACCOUNT_TTL_MS } : null;
-  tenantAccountFailure = null;
-  cachedParticipantToken = null;
+export function getHouseEtherUserId() {
+  return config.ether.houseUserId || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +286,12 @@ async function call(method, path, body, retry = true, token = null, extraHeaders
     cachedParticipantToken = null;
     return call(method, path, body, false, null, extraHeaders);
   }
+  // Token do tenant passado explicitamente (operador da conta da casa) que a
+  // Ether revogou: renova o MESMO token do tenant e tenta uma vez.
+  if (response.status === 401 && retry && token && token === cachedParticipantToken?.token) {
+    cachedParticipantToken = null;
+    return call(method, path, body, false, await getParticipantToken(), extraHeaders);
+  }
 
   const text = await response.text();
   // Resposta pode não ser JSON (página de bloqueio do WAF, erro de gateway).
@@ -345,26 +312,37 @@ async function call(method, path, body, retry = true, token = null, extraHeaders
 }
 
 // ---------------------------------------------------------------------------
-// Operações bancárias (participant-level)
+// Operações bancárias — SEMPRE com o token da conta de quem opera
+//
+// O token é obrigatório: sem ele, `call()` usaria o token do tenant e a operação
+// cairia na conta da LivrePay. Quem chama resolve o token pelo usuário do JWT
+// (getUserEtherToken em etherCredentials.js), nunca por dado do cliente.
 // ---------------------------------------------------------------------------
 
+function accountToken(token) {
+  if (typeof token !== "string" || !token) {
+    throw new Error("Token da conta é obrigatório para operar dinheiro na Ether");
+  }
+  return token;
+}
+
 /** PIX dinâmico para depósito (valor em centavos). */
-export function createPixDeposit(amountCents, expirationSeconds, idempotencyKey, subAccountToken = null) {
+export async function createPixDeposit(amountCents, expirationSeconds, idempotencyKey, token) {
   return call("POST", "/pix/deposit", {
     amount: amountCents,
     expirationTime: expirationSeconds,
     ...(idempotencyKey ? { idempotencyKey } : {}),
-  }, true, subAccountToken);
+  }, true, accountToken(token));
 }
 
 /** Saque PIX para chave fixa. */
-export function withdrawPixToKey(amountCents, pixKeyType, pixKey, description, subAccountToken = null) {
+export async function withdrawPixToKey(amountCents, pixKeyType, pixKey, description, token) {
   return call("POST", "/pix/withdraw/pix-key", {
     amount: amountCents,
     pixKeyType,
     pixKey,
     ...(description ? { description } : {}),
-  }, true, subAccountToken);
+  }, true, accountToken(token));
 }
 
 /**
@@ -373,14 +351,14 @@ export function withdrawPixToKey(amountCents, pixKeyType, pixKey, description, s
  * LIVREPAY é só em BRL, então pagar com CRYPTO exigiria uma conta cripto
  * própria que ainda não existe neste sistema.
  */
-export function payBoleto(digitableLine, { paymentMethod = "FIAT", isSimulation = false, cryptoToken, network } = {}, subAccountToken = null) {
+export async function payBoleto(digitableLine, { paymentMethod = "FIAT", isSimulation = false, cryptoToken, network } = {}, token) {
   return call("POST", "/boletos/pay-boleto", {
     digitableLine,
     paymentMethod,
     isSimulation,
     ...(cryptoToken ? { cryptoToken } : {}),
     ...(network ? { network } : {}),
-  }, true, subAccountToken);
+  }, true, accountToken(token));
 }
 
 /**
@@ -388,8 +366,8 @@ export function payBoleto(digitableLine, { paymentMethod = "FIAT", isSimulation 
  * em reais) antes de debitar qualquer coisa. A linha digitável não expõe o
  * valor de forma confiável no nosso lado — só a Ether sabe o valor real.
  */
-export async function simulateBoleto(digitableLine) {
-  const result = await payBoleto(digitableLine, { paymentMethod: "FIAT", isSimulation: true });
+export async function simulateBoleto(digitableLine, token) {
+  const result = await payBoleto(digitableLine, { paymentMethod: "FIAT", isSimulation: true }, token);
   if (!result?.boleto || typeof result.boleto.netAmount !== "number") {
     throw new EtherError(200, result);
   }
@@ -397,22 +375,22 @@ export async function simulateBoleto(digitableLine) {
 }
 
 /** Consulta o status de compensação bancária de um boleto pago. */
-export function getBoletoStatus(identifier) {
-  return call("GET", `/boletos/${identifier}`);
+export async function getBoletoStatus(identifier, token) {
+  return call("GET", `/boletos/${encodeURIComponent(identifier)}`, undefined, true, accountToken(token));
 }
 
-/** Registra uma chave PIX para o participant ou sub-conta. */
-export function createPixKey(pixKey, pixKeyType, subAccountToken = null) {
+/** Registra uma chave PIX na conta dona do token. */
+export async function createPixKey(pixKey, pixKeyType, token) {
   return call("POST", "/pix/keys", {
     pixKey,
     pixKeyType,
     preview: false,
-  }, true, subAccountToken);
+  }, true, accountToken(token));
 }
 
-/** Lista chaves PIX registradas. */
-export function listPixKeys(subAccountToken = null) {
-  return call("GET", "/pix/keys", undefined, true, subAccountToken);
+/** Lista chaves PIX da conta dona do token. */
+export async function listPixKeys(token) {
+  return call("GET", "/pix/keys", undefined, true, accountToken(token));
 }
 
 /**
@@ -425,8 +403,8 @@ export function getBankAccountDetails(token) {
 }
 
 /** Consulta saldo da conta. */
-export function getAccountBalance(subAccountToken = null) {
-  return call("GET", "/account-balance", undefined, true, subAccountToken);
+export async function getAccountBalance(token) {
+  return call("GET", "/account-balance", undefined, true, accountToken(token));
 }
 
 /** Consulta status da conta (KYC). */

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { withUser, withService } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { etherErrorFields } from "../safeLog.js";
+import { operationToken } from "../etherCredentials.js";
 import {
   withdrawPixToKey,
   inferPixKeyType,
@@ -141,8 +142,9 @@ paymentsRouter.get(
       throw new ApiError(409, "Pagamento ainda não foi enviado ao provedor");
     }
 
+    const token = await operationToken(req.userId);
     try {
-      const status = await getBoletoStatus(payment.provider_payment_id);
+      const status = await getBoletoStatus(payment.provider_payment_id, token);
       res.json(status);
     } catch (error) {
       console.error("Falha ao consultar status do boleto", { paymentId: req.params.id, ...etherErrorFields(error) });
@@ -164,10 +166,9 @@ paymentsRouter.get(
  * por trás — mesma lógica, mesmo caminho de estorno, seja quem chamar.
  */
 export async function executePaymentForUser(userId, paymentId) {
-  // Propriedade ANTES do 503 (2026-10-06). Desligar a execução não pode
-  // desligar a prova de isolamento: id de outro dono e id inexistente têm de
-  // responder IGUAL (404) — 503 para ambos esconderia um furo de RLS, e
-  // respostas diferentes vazariam existência. A checagem é a RLS de
+  // Propriedade ANTES do token: id de outro dono e id inexistente têm de
+  // responder IGUAL (404) — respostas diferentes vazariam existência, e um 403
+  // de "conta não habilitada" antes disso esconderia um furo de RLS. A checagem é a RLS de
   // public.payments ("usuário lê os próprios"), não um `if` sobre user_id.
   // UUID malformado vira 404 também (senão o Postgres responderia 22P02 -> 500).
   const idOk =
@@ -181,18 +182,13 @@ export async function executePaymentForUser(userId, paymentId) {
     : null;
   if (!visible) throw new ApiError(404, "Pagamento não encontrado");
 
-  // Desligado deliberadamente (2026-10-02): mesma razão do emit de cobrança
-  // em charges.js — `withdrawPixToKey()`/`payBoleto()` só têm o token do
-  // participante (conta pool da LivrePay), e a Ether exige conta individual
-  // por cliente. Religar só depois de confirmar com a Ether como autenticar
-  // como sub-conta e passar `subAccountToken` nas chamadas abaixo.
-  throw new ApiError(
-    503,
-    "Execução de pagamento temporariamente indisponível — aguardando integração de conta individual com o provedor.",
-  );
+  // Token da conta de QUEM PAGA (operador admin da conta da casa, ou cliente com
+  // credencial no cofre). Sem conta habilitada: 403 antes de qualquer débito.
+  const token = await operationToken(userId);
+  return executeWithToken(userId, paymentId, token);
 }
 
-export async function executePaymentForUserDisabled(userId, paymentId) {
+async function executeWithToken(userId, paymentId, token) {
   const payment = await withUser(userId, async (client) => {
     const { rows } = await client.query(
       `select id, status, amount_cents, recipient_name, recipient_key, metadata
@@ -227,7 +223,7 @@ export async function executePaymentForUserDisabled(userId, paymentId) {
   if (method === "BOLETO") {
     let simulation;
     try {
-      simulation = await simulateBoleto(payment.recipient_key);
+      simulation = await simulateBoleto(payment.recipient_key, token);
     } catch (error) {
       console.error("Falha ao simular boleto antes do pagamento", {
         paymentId,
@@ -256,12 +252,13 @@ export async function executePaymentForUserDisabled(userId, paymentId) {
   try {
     const result =
       method === "BOLETO"
-        ? await payBoleto(payment.recipient_key, { paymentMethod: "FIAT", isSimulation: false })
+        ? await payBoleto(payment.recipient_key, { paymentMethod: "FIAT", isSimulation: false }, token)
         : await withdrawPixToKey(
             payment.amount_cents,
             keyType,
             payment.recipient_key,
             payment.recipient_name ?? undefined,
+            token,
           );
 
     // Formatos de resposta diferem por método: PIX confirma com pixId/e2e;

@@ -183,11 +183,9 @@ export function useEtherCredentials() {
   });
 }
 
-/** Conta da própria LivrePay na Ether, lida pelo servidor com a credencial do tenant. */
+/** Conta da própria LivrePay na Ether (ID configurado no servidor). */
 export interface HouseAccount {
   ether_user_id: string;
-  name: string | null;
-  tax_id: string | null;
   linked_user_id: string | null;
 }
 

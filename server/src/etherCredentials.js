@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { config } from "./config.js";
 import { withService } from "./db.js";
-import { authenticateClient, getTenantAccount, getTenantToken } from "./ether.js";
+import { authenticateClient, getHouseEtherUserId, getTenantToken } from "./ether.js";
+import { ApiError } from "./middleware.js";
 
 /**
  * Cofre das credenciais da Ether por cliente final (vault.ether_credentials).
@@ -14,7 +15,8 @@ import { authenticateClient, getTenantAccount, getTenantToken } from "./ether.js
  *  - A credencial usada é SEMPRE escolhida pelo userId do JWT de quem chama
  *    (quem chama esta camada passa req.userId), nunca por dado vindo do cliente.
  *  - Conta da casa: o perfil ligado (profiles.ether_user_id) à MESMA conta que a
- *    credencial do tenant opera, E com papel admin no momento da chamada, usa o
+ *    credencial do tenant opera (ETHER_HOUSE_USER_ID), E com papel admin no
+ *    momento da chamada, usa o
  *    token do tenant, que já fica no servidor. O vínculo é gravado pela rota admin
  *    /users/:id/link-house-account; o onboarding comum recusa o ID da casa.
  *    Tirar o papel admin corta o acesso na hora.
@@ -154,11 +156,12 @@ export async function revokeCredential(userId) {
 
 /**
  * O usuário opera a conta da casa? Exige as duas coisas: estar ligado à conta que
- * a credencial do tenant opera E ter papel admin agora. Sem isso, nem consulta a
- * Ether. Se a Ether não responder, devolve false: o caminho do cofre nunca
- * entrega o token do tenant, então errar aqui só nega, nunca libera.
+ * a credencial do tenant opera (ETHER_HOUSE_USER_ID) E ter papel admin agora.
+ * Sem a variável configurada, ninguém opera a conta da casa.
  */
 async function isHouseOperator(userId) {
+  const house = getHouseEtherUserId();
+  if (!house) return false;
   const row = await withService(async (client) => {
     const { rows } = await client.query(
       `select p.ether_user_id,
@@ -169,14 +172,7 @@ async function isHouseOperator(userId) {
     return rows[0] ?? null;
   });
   const linked = row?.is_admin ? row.ether_user_id : null;
-  if (!linked) return false;
-  try {
-    const house = await getTenantAccount();
-    return String(linked).toLowerCase() === house.etherUserId;
-  } catch (error) {
-    console.error("Não foi possível consultar a conta do tenant na Ether", { status: error?.status });
-    return false;
-  }
+  return Boolean(linked) && String(linked).toLowerCase() === house;
 }
 
 /**
@@ -209,6 +205,27 @@ export async function getUserEtherToken(userId) {
     credentialId: cred.credentialId,
   });
   return auth.token;
+}
+
+/**
+ * Token para uma operação de dinheiro pedida pelo usuário `userId` (do JWT ou do
+ * worker, nunca do corpo). Conta não habilitada vira 403 com mensagem; nenhuma
+ * chamada de dinheiro acontece sem este token.
+ */
+export async function operationToken(userId) {
+  try {
+    return await getUserEtherToken(userId);
+  } catch (error) {
+    if (error instanceof CredentialUnavailableError) {
+      throw new ApiError(
+        403,
+        "Sua conta ainda não está habilitada para movimentar dinheiro no banco parceiro.",
+        "ACCOUNT_NOT_ENABLED",
+      );
+    }
+    console.error("Falha ao obter o token da conta na Ether", { userId, status: error?.status });
+    throw new ApiError(424, "Não foi possível falar com o banco parceiro agora. Tente de novo em instantes.", "PROVIDER_UNAVAILABLE");
+  }
 }
 
 /** Só para teste. */

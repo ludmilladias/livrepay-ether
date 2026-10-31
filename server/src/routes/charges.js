@@ -3,6 +3,7 @@ import { z } from "zod";
 import { withUser, withService } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { createPixDeposit, idempotencyKeyFrom } from "../ether.js";
+import { operationToken } from "../etherCredentials.js";
 import { etherErrorFields } from "../safeLog.js";
 
 export const chargesRouter = Router();
@@ -119,43 +120,21 @@ chargesRouter.patch(
 );
 
 /**
- * Emite a cobrança no provedor (Ether) e grava o código PIX.
+ * Emite a cobrança PIX no provedor (Ether) e grava o código copia e cola.
  * O usuário nunca fala com a Ether: as credenciais vivem só aqui.
- */
-chargesRouter.post(
-  "/:id/emit",
-  asyncRoute(async (req, res) => {
-    // Desligado deliberadamente (2026-10-02): a Ether exige conta individual
-    // por cliente (CPF/CNPJ próprio), não conta pool. `createPixDeposit()`
-    // hoje só tem o token do participante (LivrePay) disponível — não há
-    // mecanismo confirmado para obter um token em nome da sub-conta do
-    // usuário (criada via onboarding). Religar só depois de confirmar com a
-    // Ether como autenticar como sub-conta e passar `subAccountToken` aqui.
-    throw new ApiError(
-      503,
-      "Emissão de cobrança PIX temporariamente indisponível — aguardando integração de conta individual com o provedor.",
-    );
-  }),
-);
-
-/**
- * DESLIGADO E NÃO REGISTRADO NO ROUTER (2026-10-06). Corpo preservado para
- * quando a emissão for religada; hoje nenhum `chargesRouter.*` o referencia,
- * logo não existe URL que o alcance (antes estava em `/:id/emit-disabled`,
- * acessível a qualquer usuário autenticado e emitindo pela conta pool).
  *
- * Para religar é preciso, nesta ordem:
- *  1. A Ether confirmar como obter um token EM NOME DA SUB-CONTA do usuário
- *     (profiles.ether_user_id, criada no onboarding) e que o depósito PIX
- *     emitido com esse token credita a sub-conta, não a conta pool.
- *  2. `createPixDeposit()` passar a receber esse `subAccountToken`, resolvido
- *     no servidor a partir do usuário autenticado (nunca vindo do cliente), e
- *     recusar emissão se o usuário não tiver `ether_account_status` operacional.
- *  3. Registrar a rota de volta (e remover o 503 de `/:id/emit`), com teste de
- *     que o usuário B não emite cobrança do usuário A.
- *  4. Revisão independente de segurança antes de qualquer deploy.
+ * Ordem: (1) a RLS prova que a cobrança é de quem chama — id de outro dono e id
+ * inexistente respondem igual (404); (2) o token é o da conta de QUEM CHAMA
+ * (operationToken: conta da casa para o operador admin vinculado, cofre para
+ * cliente com credencial; sem nenhum dos dois, 403 e nada é emitido).
  */
-export const emitChargeViaPoolDisabled = asyncRoute(async (req, res) => {
+chargesRouter.post("/:id/emit", asyncRoute(emitCharge));
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function emitCharge(req, res) {
+  // UUID malformado vira 404 (senão o Postgres responderia 22P02 -> 500).
+  if (!UUID_RE.test(String(req.params.id))) throw new ApiError(404, "Cobrança não encontrada");
   const charge = await withUser(req.userId, async (client) => {
     const { rows } = await client.query(
       `select id, kind, status, amount_cents, provider_charge_id
@@ -174,12 +153,15 @@ export const emitChargeViaPoolDisabled = asyncRoute(async (req, res) => {
     throw new ApiError(409, "Cobrança já emitida no provedor");
   }
 
+  const token = await operationToken(req.userId);
+
   let deposit;
   try {
     deposit = await createPixDeposit(
       charge.amount_cents,
       PIX_EXPIRATION_SECONDS,
       idempotencyKeyFrom(charge.id),
+      token,
     );
   } catch (error) {
     console.error("Ether recusou a emissão", {
@@ -228,4 +210,4 @@ export const emitChargeViaPoolDisabled = asyncRoute(async (req, res) => {
     qr_code_id: deposit.qrCodeId,
     expire_at: deposit.expireAt,
   });
-});
+}

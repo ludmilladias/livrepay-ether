@@ -856,7 +856,7 @@ authRouter.post(
   onboardingUserLimiter,
   validate(onboardingSchema),
   asyncRoute(async (req, res) => {
-    const { createUserProfile, acceptTerms, submitPepDeclaration, getTenantAccount } = await import("../ether.js");
+    const { createUserProfile, acceptTerms, submitPepDeclaration, getHouseEtherUserId } = await import("../ether.js");
     const b = req.body;
 
     // Verifica se já fez onboarding.
@@ -896,7 +896,10 @@ authRouter.post(
         acceptTerms,
         submitPepDeclaration,
         withService,
-        isHouseAccount: async (id) => String(id).toLowerCase() === (await getTenantAccount()).etherUserId,
+        isHouseAccount: async (id) => {
+          const house = getHouseEtherUserId();
+          return Boolean(house) && String(id).toLowerCase() === house;
+        },
       },
     );
 

@@ -59,7 +59,7 @@ async function testRetryOnTokenExpired() {
       jsonResponse(201, { access_token: "tok-2", expires_in: 3600 }),
       jsonResponse(200, { pixId: "abc", status: "CONFIRMED", amount: 500, feeAmount: 1 }),
     ],
-    () => ether.withdrawPixToKey(500, "EMAIL", "a@b.com", "teste"),
+    () => ether.getAccountStatus("u-1"),
   );
 
   if (result?.pixId === "abc") ok("retry após 401 reautentica e conclui a chamada");
@@ -82,7 +82,7 @@ async function testNoInfiniteRetryOnPersistent401() {
       jsonResponse(201, { access_token: "tok-2", expires_in: 3600 }),
       jsonResponse(401, { error: "AUTH_KEY_001" }),
     ],
-    () => ether.withdrawPixToKey(500, "EMAIL", "a@b.com", "teste").catch((e) => e),
+    () => ether.getAccountStatus("u-1").catch((e) => e),
   );
 
   if (result instanceof ether.EtherError && result.status === 401) {
@@ -107,7 +107,7 @@ async function testTimeoutBecomesEtherError() {
     });
 
   try {
-    await ether.getBoletoStatus("abc").catch((e) => {
+    await ether.getAccountStatus("abc").catch((e) => {
       if (e instanceof ether.EtherError && e.status === 504) {
         ok("timeout de rede vira EtherError(504), não trava a requisição");
       } else {
@@ -189,9 +189,9 @@ async function testUserAgentOnEveryRequest() {
   // fetch do Node com uma página HTML. Toda requisição precisa de UA com prefixo
   // "Mozilla/5.0" — inclusive o /auth/authenticate.
   const ether = await import("../src/ether.js?ua=" + Date.now());
-  const { calls } = await withMockFetch([tokenOk, () => jsonResponse(200, { ok: true })], () => ether.getBoletoStatus("abc"));
+  const { calls } = await withMockFetch([tokenOk, () => jsonResponse(200, { ok: true })], () => ether.getAccountStatus("abc"));
   const authCall = calls.find((c) => c.url.endsWith("/auth/authenticate"));
-  const bizCall = calls.find((c) => c.url.endsWith("/boletos/abc"));
+  const bizCall = calls.find((c) => c.url.endsWith("/users/abc/check-account"));
   if (authCall?.options.headers["User-Agent"] === WAF_UA) ok("User-Agent presente em /auth/authenticate (participant)");
   else bad("UA em /auth/authenticate", String(authCall?.options.headers["User-Agent"]));
   if (bizCall?.options.headers["User-Agent"] === WAF_UA) ok("User-Agent presente em chamada autenticada (call)");
@@ -213,7 +213,7 @@ async function testNonJsonResponses() {
 
   // (b) HTML com 403 numa chamada autenticada: EtherError com status preservado, não SyntaxError.
   let ether = await import("../src/ether.js?html403=" + Date.now());
-  let { result } = await withMockFetch([tokenOk, html(403)], () => ether.getBoletoStatus("abc").catch((e) => e));
+  let { result } = await withMockFetch([tokenOk, html(403)], () => ether.getAccountStatus("abc").catch((e) => e));
   if (result instanceof ether.EtherError && result.status === 403) ok("HTML 403 vira EtherError(403), status preservado");
   else bad("HTML 403", `veio ${result?.name}: ${result?.message}`);
   if (result?.body?.error === "RespostaNaoJSON" && /text\/html/.test(result.body.contentType ?? "") && /Request blocked/.test(result.body.preview ?? "")) {
@@ -224,36 +224,62 @@ async function testNonJsonResponses() {
   ether = await import("../src/ether.js?bigpreview=" + Date.now());
   ({ result } = await withMockFetch(
     [tokenOk, () => new Response("x".repeat(5000), { status: 502, headers: { "Content-Type": "text/html" } })],
-    () => ether.getBoletoStatus("abc").catch((e) => e),
+    () => ether.getAccountStatus("abc").catch((e) => e),
   ));
   if (result?.status === 502 && result.body.preview.length <= 200) ok("preview do corpo não-JSON limitado a 200 caracteres");
   else bad("preview", `status ${result?.status}, tamanho ${result?.body?.preview?.length}`);
 
   // HTML no próprio /auth/authenticate: o status também chega ao chamador.
   ether = await import("../src/ether.js?html403auth=" + Date.now());
-  ({ result } = await withMockFetch([html(403)], () => ether.getBoletoStatus("abc").catch((e) => e)));
+  ({ result } = await withMockFetch([html(403)], () => ether.getAccountStatus("abc").catch((e) => e)));
   if (result instanceof ether.EtherError && result.status === 403) ok("HTML 403 no /auth/authenticate também vira EtherError(403)");
   else bad("HTML 403 no auth", `veio ${result?.name}: ${result?.message}`);
 
   // (c) resposta vazia segue funcionando (204 e 200 sem corpo) e JSON normal também.
   ether = await import("../src/ether.js?empty=" + Date.now());
-  ({ result } = await withMockFetch([tokenOk, () => new Response(null, { status: 204 })], () => ether.getBoletoStatus("abc")));
+  ({ result } = await withMockFetch([tokenOk, () => new Response(null, { status: 204 })], () => ether.getAccountStatus("abc")));
   if (result === undefined) ok("resposta 204 vazia retorna undefined (sem erro)");
   else bad("resposta vazia 204", JSON.stringify(result));
-  ({ result } = await withMockFetch([() => new Response("", { status: 200 })], () => ether.getBoletoStatus("abc")));
+  ({ result } = await withMockFetch([() => new Response("", { status: 200 })], () => ether.getAccountStatus("abc")));
   if (result === undefined) ok("resposta 200 com corpo vazio retorna undefined");
   else bad("resposta vazia 200", JSON.stringify(result));
-  ({ result } = await withMockFetch([() => jsonResponse(200, { a: 1 })], () => ether.getBoletoStatus("abc")));
+  ({ result } = await withMockFetch([() => jsonResponse(200, { a: 1 })], () => ether.getAccountStatus("abc")));
   if (result?.a === 1) ok("resposta JSON normal continua funcionando");
   else bad("JSON normal", JSON.stringify(result));
 
   // HTML com status 200 (gateway devolvendo página): também erro explícito, não SyntaxError.
   ({ result } = await withMockFetch(
     [() => new Response("<html>ok?</html>", { status: 200, headers: { "Content-Type": "text/html" } })],
-    () => ether.getBoletoStatus("abc").catch((e) => e),
+    () => ether.getAccountStatus("abc").catch((e) => e),
   ));
   if (result instanceof ether.EtherError && result.body?.error === "RespostaNaoJSON") ok("HTML com status 200 vira EtherError(RespostaNaoJSON)");
   else bad("HTML 200", `veio ${result?.name}`);
+}
+
+async function testMoneyCallsRequireAccountToken() {
+  // Sem token explícito, NENHUMA função de dinheiro pode cair no token do
+  // tenant (conta da LivrePay): rejeita antes de qualquer chamada à Ether.
+  const ether = await import("../src/ether.js?moneytoken=" + Date.now());
+  const attempts = {
+    createPixDeposit: () => ether.createPixDeposit(100, 3600, "abc"),
+    withdrawPixToKey: () => ether.withdrawPixToKey(100, "EMAIL", "a@b.com", "x"),
+    payBoleto: () => ether.payBoleto("1".repeat(47), { isSimulation: false }),
+    simulateBoleto: () => ether.simulateBoleto("1".repeat(47)),
+    getBoletoStatus: () => ether.getBoletoStatus("abc"),
+    createPixKey: () => ether.createPixKey("a@b.com", "EMAIL"),
+    listPixKeys: () => ether.listPixKeys(),
+    getAccountBalance: () => ether.getAccountBalance(null),
+  };
+  for (const [name, run] of Object.entries(attempts)) {
+    const { result, calls } = await withMockFetch([tokenOk, () => jsonResponse(200, {})], () => run().then(() => "resolveu", (e) => e));
+    if (result instanceof Error && calls.length === 0) ok(`${name} sem token rejeita sem chamar a Ether`);
+    else bad(`${name} sem token`, `resultado ${result}, ${calls.length} chamada(s)`);
+  }
+
+  // Com token explícito, usa exatamente ele (sem autenticar como tenant).
+  const { calls } = await withMockFetch([() => jsonResponse(201, { uuid: "u" })], () => ether.createPixDeposit(100, 3600, "abc", "tok-cliente"));
+  if (calls.length === 1 && calls[0].options.headers.Authorization === "Bearer tok-cliente") ok("com token explícito, usa só esse token");
+  else bad("token explícito", JSON.stringify(calls.map((c) => c.url)));
 }
 
 async function main() {
@@ -265,6 +291,7 @@ async function main() {
   await testKycStepsMatchOfficialGuide();
   await testUserAgentOnEveryRequest();
   await testNonJsonResponses();
+  await testMoneyCallsRequireAccountToken();
 
   console.log(`\n${PASS} ok, ${FAIL} falha(s)`);
   process.exit(FAIL > 0 ? 1 : 0);
