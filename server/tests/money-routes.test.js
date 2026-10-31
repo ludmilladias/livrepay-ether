@@ -197,6 +197,7 @@ withdrawMode = "reject";
 ledger.length = 0;
 r = await post(`/payments/${payRecusado}/execute`, CASA);
 check("Ether recusa o Pix -> estorna o débito", ledger[0]?.[0] === "debit" && ledger.some((l) => l[0] === "refund" && l[1] === payRecusado) && r.status >= 400, JSON.stringify(ledger));
+check("recusa da Ether volta 424 com mensagem (não 502, que a borda troca por página genérica)", r.status === 424 && r.json?.code === "PROVIDER_REJECTED", r.text);
 withdrawMode = "ok";
 
 // Resultado incerto (504/5xx/rede): NÃO estorna — o dinheiro pode ter saído.

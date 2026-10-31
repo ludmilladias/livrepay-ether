@@ -151,7 +151,7 @@ paymentsRouter.get(
       res.json(status);
     } catch (error) {
       console.error("Falha ao consultar status do boleto", { paymentId: req.params.id, ...etherErrorFields(error) });
-      throw new ApiError(502, "Não foi possível consultar o status no provedor");
+      throw new ApiError(424, "Não foi possível consultar o status no banco parceiro.", "PROVIDER_UNAVAILABLE");
     }
   }),
 );
@@ -229,7 +229,7 @@ async function executeWithToken(userId, paymentId, token) {
         paymentId,
         ...etherErrorFields(error),
       });
-      throw new ApiError(502, "Não foi possível confirmar o valor do boleto no provedor");
+      throw new ApiError(424, "Não foi possível confirmar o valor do boleto no banco parceiro.", "PROVIDER_REJECTED");
     }
 
     const realCents = Math.round(simulation.boleto.netAmount * 100);
@@ -382,7 +382,8 @@ async function executeWithToken(userId, paymentId, token) {
       throw new ApiError(500, "Falha ao processar. O suporte foi acionado para regularizar o saldo.");
     }
 
-    throw new ApiError(502, "Provedor recusou o pagamento. Valor estornado.");
+    // 424 e não 502: a borda da DigitalOcean troca 502/503/504 por uma página genérica.
+    throw new ApiError(424, "O banco parceiro recusou o pagamento. Valor estornado.", "PROVIDER_REJECTED");
   }
 }
 

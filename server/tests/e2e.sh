@@ -198,14 +198,14 @@ if [ "$ETHER_ALLOW_REAL_PAYMENTS" = "1" ]; then
   # O pagamento de boleto consulta o valor real na Ether (simulateBoleto, com
   # isSimulation:true — NUNCA move dinheiro) ANTES de debitar. Com a linha
   # digitável fictícia deste teste, os desfechos possíveis contra a Ether real
-  # são: 502 (provedor recusa a linha), 409 (valor simulado diverge do
+  # são: 424 (provedor recusa a linha), 409 (valor simulado diverge do
   # informado) ou 422 (linha aceita mas saldo insuficiente — sempre 0 aqui).
   # Hoje alice nem chega lá: sem conta habilitada, 403 antes até da simulação.
   # Em NENHUM desses casos payBoleto(isSimulation:false) chega a ser chamado:
   # é a única chamada que de fato pagaria o boleto.
   R=$(req POST "/payments/$BOLETO_ID/execute" "$ALICE_TOKEN" "")
   BOLETO_EXEC=$(split_status "$R")
-  { [ "$BOLETO_EXEC" = "403" ] || [ "$BOLETO_EXEC" = "422" ] || [ "$BOLETO_EXEC" = "502" ] || [ "$BOLETO_EXEC" = "409" ]; } \
+  { [ "$BOLETO_EXEC" = "403" ] || [ "$BOLETO_EXEC" = "422" ] || [ "$BOLETO_EXEC" = "424" ] || [ "$BOLETO_EXEC" = "409" ]; } \
     && ok "pagamento de boleto é bloqueado sem saldo/provedor ($BOLETO_EXEC)" \
     || bad "pagamento de boleto deveria ser bloqueado (veio $BOLETO_EXEC)"
 

@@ -4,7 +4,7 @@ import { withUser, withService } from "../db.js";
 import { ApiError, asyncRoute, requireAuth, validate } from "../middleware.js";
 import { createPixDeposit, idempotencyKeyFrom } from "../ether.js";
 import { operationToken } from "../etherCredentials.js";
-import { etherErrorFields } from "../safeLog.js";
+import { etherErrorFields, safeEtherCode } from "../safeLog.js";
 
 export const chargesRouter = Router();
 chargesRouter.use(requireAuth);
@@ -168,7 +168,14 @@ async function emitCharge(req, res) {
       chargeId: charge.id,
       ...etherErrorFields(error),
     });
-    throw new ApiError(502, "Provedor recusou a emissão da cobrança");
+    // 424 e não 502: a borda da DigitalOcean troca 502/503/504 por uma página
+    // genérica de "Gateway Timeout" e a mensagem nunca chegaria à tela.
+    const code = safeEtherCode(error);
+    throw new ApiError(
+      424,
+      `O banco parceiro recusou a emissão da cobrança${code ? ` (código ${code})` : ""}.`,
+      "PROVIDER_REJECTED",
+    );
   }
 
   // Campos do provedor são gravados com privilégio de serviço: o usuário não
