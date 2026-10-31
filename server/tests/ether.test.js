@@ -282,6 +282,23 @@ async function testMoneyCallsRequireAccountToken() {
   else bad("token explícito", JSON.stringify(calls.map((c) => c.url)));
 }
 
+async function testPixBaseUrlOverride() {
+  // ETHER_PIX_BASE_URL muda só o host de /pix/*; auth e o resto seguem no baseUrl.
+  const ether = await import("../src/ether.js?pixbase=" + Date.now());
+  const { config } = await import("../src/config.js");
+  config.ether.pixBaseUrl = "https://pix.invalid";
+  try {
+    const dep = await withMockFetch([() => jsonResponse(201, { uuid: "u" })], () => ether.createPixDeposit(100, 3600, "abc", "tok-x"));
+    const acc = await withMockFetch([tokenOk, () => jsonResponse(200, {})], () => ether.getAccountStatus("u-1"));
+    if (dep.calls[0].url === "https://pix.invalid/pix/deposit") ok("com ETHER_PIX_BASE_URL, /pix/* usa o host do Pix");
+    else bad("host do Pix", dep.calls[0].url);
+    if (acc.calls.every((c) => c.url.startsWith("https://ether.invalid"))) ok("auth e demais rotas seguem no baseUrl");
+    else bad("host das demais rotas", JSON.stringify(acc.calls.map((c) => c.url)));
+  } finally {
+    config.ether.pixBaseUrl = "";
+  }
+}
+
 async function main() {
   // Cada teste importa o módulo com uma query string diferente para pegar
   // uma instância nova (cachedToken é estado a nível de módulo).
@@ -292,6 +309,7 @@ async function main() {
   await testUserAgentOnEveryRequest();
   await testNonJsonResponses();
   await testMoneyCallsRequireAccountToken();
+  await testPixBaseUrlOverride();
 
   console.log(`\n${PASS} ok, ${FAIL} falha(s)`);
   process.exit(FAIL > 0 ? 1 : 0);

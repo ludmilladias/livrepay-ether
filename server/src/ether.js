@@ -270,7 +270,10 @@ async function call(method, path, body, retry = true, token = null, extraHeaders
   const authToken = token ?? await getParticipantToken();
   // FormData: o fetch define o Content-Type com o boundary — não setar à mão.
   const isForm = typeof FormData !== "undefined" && body instanceof FormData;
-  const response = await fetchWithTimeout(`${config.ether.baseUrl}${path}`, {
+  // As guias de /pix/* da Ether citam api.etherglobalassets.com (sem .br); o resto
+  // usa o baseUrl. ETHER_PIX_BASE_URL permite testar o host do Pix sem mexer no auth.
+  const base = path.startsWith("/pix/") && config.ether.pixBaseUrl ? config.ether.pixBaseUrl : config.ether.baseUrl;
+  const response = await fetchWithTimeout(`${base}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${authToken}`,

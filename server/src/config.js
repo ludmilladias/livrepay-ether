@@ -72,6 +72,8 @@ export const config = {
 
   ether: {
     baseUrl: optional("ETHER_BASE_URL", "https://api.etherglobalassets.com.br"),
+    // Host só das chamadas /pix/* (vazio = usa baseUrl). Sem barra final.
+    pixBaseUrl: optional("ETHER_PIX_BASE_URL", "").trim().replace(/\/+$/, ""),
     clientId: optional("ETHER_CLIENT_ID", ""),
     clientSecret: optional("ETHER_CLIENT_SECRET", ""),
     webhookSecret: optional("ETHER_WEBHOOK_SECRET", ""),
