@@ -347,7 +347,10 @@ authRouter.get(
         `select p.id, p.full_name, p.tax_id, p.phone,
                 p.ether_user_id, p.ether_account_status, p.ether_pix_key,
                 p.ether_pix_key_type,
-                coalesce(array_agg(r.role::text) filter (where r.role is not null), '{}') as roles
+                coalesce(array_agg(r.role::text) filter (where r.role is not null), '{}') as roles,
+                coalesce((select array_agg(m.module order by m.module)
+                            from public.account_modules m
+                           where m.user_id = p.id and m.revoked_at is null), '{}') as modules
            from public.profiles p
            left join public.user_roles r on r.user_id = p.id
           where p.id = $1
@@ -977,9 +980,9 @@ authRouter.get(
       return rows[0];
     });
 
-    const { getAccountStatus } = await import("../ether.js");
+    const { getClientKycStatus } = await import("../ether.js");
     const { withService } = await import("../db.js");
-    const body = await reconcileOnboardingStatus(req.userId, profile, { getAccountStatus, withService });
+    const body = await reconcileOnboardingStatus(req.userId, profile, { getAccountStatus: getClientKycStatus, withService });
     res.json(body);
   }),
 );
@@ -1013,7 +1016,7 @@ authRouter.use(
     },
     ether: {
       uploadDocument: async (...a) => (await import("../ether.js")).uploadDocument(...a),
-      getAccountStatus: async (...a) => (await import("../ether.js")).getAccountStatus(...a),
+      getAccountStatus: async (...a) => (await import("../ether.js")).getClientKycStatus(...a),
     },
   }),
 );

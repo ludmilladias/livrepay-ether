@@ -412,9 +412,37 @@ export async function getAccountBalance(token) {
   return call("GET", "/account-balance", undefined, true, accountToken(token));
 }
 
-/** Consulta status da conta (KYC). */
+/**
+ * Consulta status da conta via check-account. Só funciona para a conta do
+ * PRÓPRIO tenant: para cliente final a Ether responde 400 ONB_USR_006 com a
+ * credencial do tenant (teste real 2026-11-03). Para cliente use
+ * getClientKycStatus. Mantida porque os testes de call() a usam como veículo.
+ */
 export function getAccountStatus(userId) {
   return call("GET", `/users/${userId}/check-account`);
+}
+
+/**
+ * Situação do KYC de um cliente final, com a credencial do tenant. Mesmo formato
+ * de antes ({ status, documentChecklist }), mas por dois endpoints que aceitam o
+ * token do tenant para cliente (teste real 2026-11-03):
+ *  - GET /users/account/profile/{id} -> user.status
+ *    (pending_documents | pending_analysis | active | inactive)
+ *  - GET /users/{id}/document-requirements -> { pending, uploaded, rejected }
+ * Sem status a falha propaga (quem chama trata como "não deu para consultar");
+ * a falha só do checklist vira null, sem derrubar o status.
+ */
+export async function getClientKycStatus(userId) {
+  const id = encodeURIComponent(userId);
+  // Em sequência, não Promise.all: com o cache de token vazio, duas chamadas em
+  // paralelo autenticariam o tenant duas vezes.
+  const profile = await call("GET", `/users/account/profile/${id}`);
+  const status = profile?.user?.status;
+  if (typeof status !== "string" || !status) {
+    throw new EtherError(502, { error: "StatusAusente" });
+  }
+  const checklist = await call("GET", `/users/${id}/document-requirements`).catch(() => null);
+  return { status, documentChecklist: checklist ?? null };
 }
 
 // ---------------------------------------------------------------------------

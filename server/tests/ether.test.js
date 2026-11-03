@@ -299,6 +299,42 @@ async function testPixBaseUrlOverride() {
   }
 }
 
+async function testClientKycStatus() {
+  // check-account recusa cliente com o token do tenant (400 ONB_USR_006, teste real
+  // 2026-11-03); o status vem de account/profile e o checklist de document-requirements.
+  const ether = await import("../src/ether.js?kyc=" + Date.now());
+  const checklist = { pending: [{ type: "CARTAO_CNPJ" }], uploaded: [], rejected: [] };
+  // Responde pela URL: o token fica em cache entre os cenários.
+  const router = (profileBody, requirements) => (url) => {
+    if (url.endsWith("/auth/authenticate")) return tokenOk();
+    if (url.includes("/users/account/profile/")) return jsonResponse(200, profileBody);
+    return requirements;
+  };
+  let { result, calls } = await withMockFetch(
+    [router({ user: { id: "u-1", status: "pending_documents" } }, jsonResponse(200, checklist))],
+    () => ether.getClientKycStatus("u-1"),
+  );
+  const urls = calls.map((c) => c.url);
+  if (urls.filter((u) => u.endsWith("/auth/authenticate")).length === 1) ok("status do cliente autentica o tenant uma vez só");
+  else bad("autenticações no status do cliente", JSON.stringify(urls));
+  if (urls.some((u) => u.endsWith("/users/account/profile/u-1")) && urls.some((u) => u.endsWith("/users/u-1/document-requirements"))
+    && !urls.some((u) => u.includes("check-account"))) ok("status do cliente: account/profile + document-requirements, sem check-account");
+  else bad("endpoints do status do cliente", JSON.stringify(urls));
+  if (result.status === "pending_documents" && result.documentChecklist?.pending?.[0]?.type === "CARTAO_CNPJ") ok("status e checklist no formato { status, documentChecklist }");
+  else bad("formato do status do cliente", JSON.stringify(result));
+
+  ({ result } = await withMockFetch(
+    [router({ user: { status: "pending_analysis" } }, jsonResponse(404, { message: "USR_NOT_002" }))],
+    () => ether.getClientKycStatus("u-1"),
+  ));
+  if (result.status === "pending_analysis" && result.documentChecklist === null) ok("checklist indisponível não derruba o status");
+  else bad("checklist indisponível", JSON.stringify(result));
+
+  ({ result } = await withMockFetch([router({ user: {} }, jsonResponse(200, checklist))], () => ether.getClientKycStatus("u-1").catch((e) => e)));
+  if (result?.name === "EtherError") ok("perfil sem status -> erro (não inventa status)");
+  else bad("perfil sem status", JSON.stringify(result));
+}
+
 async function main() {
   // Cada teste importa o módulo com uma query string diferente para pegar
   // uma instância nova (cachedToken é estado a nível de módulo).
@@ -310,6 +346,7 @@ async function main() {
   await testNonJsonResponses();
   await testMoneyCallsRequireAccountToken();
   await testPixBaseUrlOverride();
+  await testClientKycStatus();
 
   console.log(`\n${PASS} ok, ${FAIL} falha(s)`);
   process.exit(FAIL > 0 ? 1 : 0);
