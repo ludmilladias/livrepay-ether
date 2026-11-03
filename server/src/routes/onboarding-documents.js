@@ -47,6 +47,9 @@ export function sniffMime(buf) {
 
 const typeParam = z.enum([...UPLOAD_DOCUMENT_TYPES]);
 
+const registrationExpired = () =>
+  new ApiError(409, "Para enviar documentos, confirme seus dados de novo.", "REGISTRATION_EXPIRED");
+
 /** Converte falhas do body-parser (tamanho etc.) em ApiError, sem 500. */
 function rawBody(req, res, next) {
   express.raw({ type: ALLOWED_MIME, limit: MAX_UPLOAD_BYTES })(req, res, (err) => {
@@ -58,7 +61,7 @@ function rawBody(req, res, next) {
   });
 }
 
-export function createDocumentUploadRouter({ loadProfile, syncLocalStatus, ether }) {
+export function createDocumentUploadRouter({ loadProfile, syncLocalStatus, ether, registrationTokens }) {
   const router = Router();
 
   const uploadLimiter = rateLimit({
@@ -90,6 +93,13 @@ export function createDocumentUploadRouter({ loadProfile, syncLocalStatus, ether
       if (profile.ether_account_status === "rejected" || profile.ether_account_status === "full") {
         throw new ApiError(409, "Esta conta não aceita mais documentos.", "ACCOUNT_NOT_PENDING");
       }
+      // A Ether só aceita o upload com o token de cadastro do cliente (48 h).
+      // Sem ele, nem aceita os bytes: o cliente reenvia o cadastro para gerar outro.
+      if (registrationTokens) {
+        const token = await registrationTokens.load(req.userId, profile.ether_user_id);
+        if (!token) throw registrationExpired();
+        req.registrationToken = token;
+      }
       req.etherProfile = profile;
       next();
     }),
@@ -115,7 +125,7 @@ export function createDocumentUploadRouter({ loadProfile, syncLocalStatus, ether
         await ether.uploadDocument(profile.ether_user_id, docType, buf, {
           filename: `${docType.toLowerCase()}.${EXTENSION[real]}`,
           mimeType: real,
-        });
+        }, req.registrationToken);
       } catch (error) {
         console.error("Ether recusou o upload de documento", {
           userId: req.userId,
@@ -123,9 +133,16 @@ export function createDocumentUploadRouter({ loadProfile, syncLocalStatus, ether
           bytes: buf.length,
           ...etherErrorFields(error),
         });
+        // Token de cadastro recusado (vencido antes da hora): descarta e pede reenvio.
+        if (error?.status === 401 && req.registrationToken) {
+          await registrationTokens.remove(req.userId).catch(() => {});
+          throw registrationExpired();
+        }
         const rejected = error?.status === 400 || error?.status === 409 || error?.status === 422;
+        // 424, não 502: a borda da DigitalOcean troca 5xx pela página HTML dela e
+        // o cliente via "504" em vez da mensagem (incidente 2026-11-03).
         throw new ApiError(
-          rejected ? 422 : 502,
+          rejected ? 422 : 424,
           rejected
             ? "O documento foi recusado. Verifique o arquivo e tente novamente."
             : "Não foi possível enviar o documento agora. Tente novamente em instantes.",

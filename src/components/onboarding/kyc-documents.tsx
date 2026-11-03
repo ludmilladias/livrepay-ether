@@ -514,6 +514,10 @@ export function KycDocuments({ embedded = false }: { embedded?: boolean }) {
 
   const heading = HEADINGS[stage];
   const canUpload = stage === "awaiting_documents" || stage === "in_analysis" || stage === "pending_unknown";
+  // O envio de documentos depende de um acesso ao cadastro no banco parceiro que
+  // vale 48 h. Vencido (ou inexistente), o cliente confirma os dados de novo.
+  const needsReconfirm = canUpload && journey.data?.registration_token_valid === false;
+  const uploadEnabled = canUpload && !needsReconfirm;
   const hasPendingWork = !!checklist && (checklist.pending.length > 0 || checklist.rejected.length > 0);
   // Quem ainda deve documento fica nesta tela; os demais podem ir ao painel.
   const canGoToDashboard = stage !== "awaiting_documents";
@@ -531,6 +535,21 @@ export function KycDocuments({ embedded = false }: { embedded?: boolean }) {
             <p className="text-sm text-muted-foreground">
               Emissão de PIX e pagamentos só são liberados depois da aprovação da conta.
             </p>
+          )}
+
+          {needsReconfirm && (
+            <Alert>
+              <AlertTitle>Confirme seus dados para enviar os documentos</AlertTitle>
+              <AlertDescription className="space-y-3">
+                <p>
+                  Por segurança, o acesso para enviar documentos ao banco parceiro vale por 48 horas depois do
+                  cadastro. Confirme seus dados de novo para liberar o envio: seu cadastro continua o mesmo.
+                </p>
+                <Button asChild size="sm">
+                  <Link to="/onboarding?reconfirmar=1">Confirmar meus dados de novo</Link>
+                </Button>
+              </AlertDescription>
+            </Alert>
           )}
 
           {usingFallback && (
@@ -575,7 +594,7 @@ export function KycDocuments({ embedded = false }: { embedded?: boolean }) {
                   </h3>
                   <ul className="space-y-3">
                     {checklist.rejected.map((item) =>
-                      canUpload ? (
+                      uploadEnabled ? (
                         <UploadRow key={item.type} item={item} rejected />
                       ) : (
                         <li key={item.type} className="rounded-lg border p-4 text-sm">{item.label}</li>
@@ -591,14 +610,18 @@ export function KycDocuments({ embedded = false }: { embedded?: boolean }) {
                     Pendentes ({checklist.pending.length})
                   </h3>
                   <ul className="space-y-3">
-                    {checklist.pending.map((item) => (
-                      <UploadRow
-                        key={item.type}
-                        item={item}
-                        rejected={false}
-                        onUploaded={usingFallback ? markSent : undefined}
-                      />
-                    ))}
+                    {checklist.pending.map((item) =>
+                      uploadEnabled ? (
+                        <UploadRow
+                          key={item.type}
+                          item={item}
+                          rejected={false}
+                          onUploaded={usingFallback ? markSent : undefined}
+                        />
+                      ) : (
+                        <li key={item.type} className="rounded-lg border p-4 text-sm">{item.label}</li>
+                      ),
+                    )}
                   </ul>
                 </section>
               )}

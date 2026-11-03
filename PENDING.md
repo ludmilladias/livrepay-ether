@@ -892,6 +892,44 @@ captura de tela em 2026-10-31: pedir um novo à Ether.
 
 ---
 
+### 2026-11-03 — cadastro: IP fixo, status do cliente e token de cadastro
+
+**IP de saída fixo:** a Ether bloqueava `POST /users/profile-data` vindo da DigitalOcean (403
+HTML do firewall, `nonJson: true` no log). Ativado o Dedicated Egress IP do app
+(`134.199.198.106` e `134.199.201.211`, US$ 25/mês) e enviado à Ether, que liberou. **Não clicar
+em "Release dedicated egress IPs"**: os IPs não voltam e a Ether teria de liberar de novo.
+
+**Matriz testada contra a Ether real (2026-11-03), por etapa e credencial:**
+
+| Etapa | Credencial do tenant | `recoveryToken` |
+|---|---|---|
+| `POST /users/profile-data` | ✅ | — |
+| `GET /users/{id}/check-account` (cliente) | ❌ 400 `ONB_USR_006` | ❌ 401 |
+| `GET /users/account/profile/{id}` | ✅ (`user.status`) | ❌ 401 |
+| `GET /users/{id}/document-requirements` | ✅ | ✅ |
+| `POST /users/{id}/accept-terms` | ❌ 403 `USR_PRM_004` | ✅ |
+| `POST /users/{id}/pep-declaration` | ❌ 401 `COMPL_AUTH_001` | ❌ 401 `COMPL_AUTH_001` |
+| `POST /users/document/upload` | ❌ 404 `USR_NOT_002` | ✅ |
+
+O `recoveryToken` vem na resposta do profile-data (JWT, `scope=registration_recovery`, 48 h) e é
+renovado a cada reenvio do cadastro (upsert por e-mail, `recovery: true`).
+
+**Feito:** status do cliente por `account/profile` + `document-requirements`
+(`getClientKycStatus`); token guardado cifrado em `vault.ether_registration_tokens`
+(`server/src/registrationTokens.js`, mesma chave `ETHER_CREDENTIALS_KEY`) e usado no aceite de
+termos e no upload; sem token válido o upload responde 409 `REGISTRATION_EXPIRED` e a tela de
+documentos oferece "Confirmar meus dados de novo" (`/onboarding?reconfirmar=1`), que reenvia o
+cadastro e exige que a Ether devolva o mesmo cliente. Falhas de integração no cadastro e no
+upload passam de 502 para 424 (a borda da DigitalOcean troca 5xx pela página genérica dela).
+
+**Pendente com a Ether:** qual credencial a `pep-declaration` aceita (recusada com as duas), e se
+o aceite de termos e o upload com o `recoveryToken` são o caminho oficial ou um efeito colateral.
+Contas de diagnóstico criadas nos testes de hoje, com CPF fictício (não são clientes):
+`55deceda-c4b9-4c21-b027-329b3e0d6241` (recebeu aceite e um PDF de teste) e
+`7f85e673-0b6b-4f5d-a3f4-469b7bcc5aad`.
+
+---
+
 ## 2. Módulos com dado 100% fictício (maior pendência restante)
 
 Estas 12 páginas ainda são as telas geradas originalmente (fora deste ciclo de correções): arrays

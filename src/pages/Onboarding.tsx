@@ -1,7 +1,7 @@
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useOnboardingStatus, type PersonType } from "@/hooks/use-onboarding";
+import { deriveStage, useOnboardingStatus, type PersonType } from "@/hooks/use-onboarding";
 import { KycDocuments } from "@/components/onboarding/kyc-documents";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 import { useAuth } from "@/hooks/use-auth";
@@ -22,6 +22,7 @@ function parseTipo(raw: string | null): PersonType | null {
  */
 export default function Onboarding() {
   const { signOut } = useAuth();
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const { data: status, isLoading: statusLoading, isError: statusError, refetch } = useOnboardingStatus();
 
@@ -51,12 +52,24 @@ export default function Onboarding() {
     );
   }
 
+  // "Confirmar meus dados de novo": só para quem ainda está em abertura de conta.
+  // O reenvio gera um novo acesso para enviar documentos (o servidor confere que
+  // é o mesmo cadastro no banco parceiro).
+  const stage = deriveStage(status.status);
+  const reconfirm =
+    params.get("reconfirmar") === "1" &&
+    (stage === "awaiting_documents" || stage === "in_analysis" || stage === "pending_unknown");
+
   // Cadastro já enviado (inclusive logo após o submit): documentos e situação da conta.
-  if (status.status !== "not_started") return <KycDocuments />;
+  if (status.status !== "not_started" && !reconfirm) return <KycDocuments />;
 
   return (
     <div className="min-h-screen bg-background p-4 sm:p-6 flex items-start sm:items-center justify-center">
-      <OnboardingWizard initialType={parseTipo(params.get("tipo"))} />
+      <OnboardingWizard
+        initialType={parseTipo(params.get("tipo"))}
+        reconfirm={reconfirm}
+        onSubmitted={reconfirm ? () => navigate("/onboarding", { replace: true }) : undefined}
+      />
     </div>
   );
 }

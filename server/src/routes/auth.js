@@ -680,7 +680,8 @@ export function buildOnboardingPayload(b, titular) {
  *  - USR_DUP_005 (documento já existe na Ether) -> 409 próprio: reenviar com
  *    os mesmos dados nunca resolve, e cada recusa conta no limite de tentativas.
  *  - 401/403/404 (credencial, WAF, tenant) e rede/timeout são falha da
- *    INTEGRAÇÃO, não do cliente -> 502 (o cliente não tem o que corrigir).
+ *    INTEGRAÇÃO, não do cliente -> 424 (o cliente não tem o que corrigir). 424 e
+ *    não 502 pelo mesmo motivo do primeiro item (padrão dos pagamentos, d52d7d5).
  * Mensagens estáticas: nada do corpo da Ether (que ecoa CPF/renda) vai ao cliente.
  */
 export function onboardingProviderError(error) {
@@ -701,7 +702,7 @@ export function onboardingProviderError(error) {
     );
   }
   return new ApiError(
-    502,
+    424,
     "Não foi possível iniciar o cadastro agora. Tente novamente em alguns minutos.",
     "PROVIDER_UNAVAILABLE",
   );
@@ -735,10 +736,19 @@ export function onboardingProviderError(error) {
  * perfil (índice único profiles_ether_user_id_idx): 409, sem sobrescrever.
  *
  * Dependências injetadas para teste sem Ether nem banco.
+ *
+ * Token de cadastro: a resposta do profile-data traz um `recoveryToken` (48 h),
+ * a única credencial que a Ether aceita para o aceite de termos e o upload de
+ * documentos do cliente (teste real 2026-11-03). Ele é guardado cifrado
+ * (`storeRegistrationToken`) e usado no aceite logo abaixo. Falhar ao guardar não
+ * desfaz o cadastro: o cliente reenvia os dados para gerar outro.
+ *
+ * `expectedEtherUserId` (reenvio do cadastro por quem já está vinculado): a Ether
+ * tem de devolver o MESMO cliente; se devolver outro, nada é gravado.
  */
 export async function createAndLinkEtherAccount(
-  { userId, payload, taxId, phone, userAgent },
-  { createUserProfile, acceptTerms, submitPepDeclaration, withService, isHouseAccount },
+  { userId, payload, taxId, phone, userAgent, expectedEtherUserId },
+  { createUserProfile, acceptTerms, submitPepDeclaration, withService, isHouseAccount, storeRegistrationToken },
 ) {
   let etherResult;
   try {
@@ -756,6 +766,8 @@ export async function createAndLinkEtherAccount(
   // `recovery: true` = a Ether achou um cadastro incompleto por e-mail e o
   // reaproveitou (upsert) — é o sinal de que isto é uma reconciliação.
   const recovered = etherResult.recovery === true;
+  // Na resposta real o status vem em `user.status` (não no topo).
+  const etherStatus = etherResult.status ?? etherResult.user?.status;
 
   // A Ether faz upsert por e-mail: um cadastro comum com o e-mail da conta da
   // LivrePay receberia o ID da conta da CASA. Esse ID só é ligado pela rota admin
@@ -778,6 +790,19 @@ export async function createAndLinkEtherAccount(
     }
   }
 
+  if (expectedEtherUserId && etherUserId !== expectedEtherUserId) {
+    console.error("ether_reconfirm_mismatch: reenvio do cadastro devolveu outro cliente da Ether", {
+      userId,
+      expectedEtherUserId,
+      etherUserId,
+    });
+    throw new ApiError(
+      409,
+      "Os dados enviados não correspondem ao cadastro já iniciado. Fale com o atendimento do LivrePay.",
+      "ETHER_ACCOUNT_MISMATCH",
+    );
+  }
+
   try {
     // service_role pode escrever ether_* (o usuário não: trigger + RLS).
     await withService(async (client) => {
@@ -785,7 +810,7 @@ export async function createAndLinkEtherAccount(
         `update public.profiles
             set ether_user_id = $2, ether_account_status = $3, tax_id = $4, phone = $5
           where id = $1`,
-        [userId, etherUserId, toLocalStatus(etherResult.status), taxId, phone],
+        [userId, etherUserId, toLocalStatus(etherStatus), taxId, phone],
       );
     });
   } catch (error) {
@@ -816,10 +841,25 @@ export async function createAndLinkEtherAccount(
     console.log("ether_onboarding_recovered", { userId, etherUserId });
   }
 
+  const registrationToken =
+    typeof etherResult.recoveryToken === "string" && etherResult.recoveryToken ? etherResult.recoveryToken : null;
+  let registrationTokenStored = false;
+  if (registrationToken && storeRegistrationToken) {
+    try {
+      await storeRegistrationToken({ userId, etherUserId, token: registrationToken });
+      registrationTokenStored = true;
+    } catch (error) {
+      console.error("Falha ao guardar o token de cadastro da Ether", { userId, etherUserId, ...errorLogFields(error) });
+    }
+  }
+
   // Aceite de termos e declaração de PEP são exigidos antes da análise. Uma
   // falha aqui não invalida o cadastro já criado — registramos e seguimos.
+  // O aceite usa o token de cadastro (com o do tenant a Ether recusa: 403
+  // USR_PRM_004). A PEP é recusada com os dois tokens (401 COMPL_AUTH_001,
+  // teste real 2026-11-03): pendente de resposta da Ether.
   for (const [etapa, fn] of [
-    ["accept-terms", () => acceptTerms(etherUserId, { userAgent })],
+    ["accept-terms", () => acceptTerms(etherUserId, { userAgent }, registrationToken ?? undefined)],
     ["pep-declaration", () => submitPepDeclaration(etherUserId)],
   ]) {
     try {
@@ -831,9 +871,10 @@ export async function createAndLinkEtherAccount(
 
   return {
     etherUserId,
-    etherStatus: etherResult.status,
+    etherStatus,
     documentChecklist: etherResult.documentChecklist ?? null,
     recovered,
+    registrationTokenStored,
   };
 }
 
@@ -868,9 +909,12 @@ authRouter.post(
       return rows[0];
     });
 
-    if (existing?.ether_user_id) {
+    if (existing?.ether_user_id && ["full", "rejected"].includes(existing.ether_account_status)) {
       throw new ApiError(409, "Onboarding já realizado. Status: " + existing.ether_account_status);
     }
+    // Já vinculado e ainda em abertura: é o "Confirmar meus dados de novo" — o
+    // reenvio gera um token de cadastro novo e tem de devolver o mesmo cliente.
+    const expectedEtherUserId = existing?.ether_user_id ?? null;
 
     // Nome e e-mail do titular: o e-mail vive em auth.users, fora do alcance
     // da role `authenticated` — leitura via service_role, do próprio usuário.
@@ -889,13 +933,22 @@ authRouter.post(
 
     const payload = buildOnboardingPayload(b, titular);
 
+    const { storeRegistrationToken } = await import("../registrationTokens.js");
     const linked = await createAndLinkEtherAccount(
-      { userId: req.userId, payload, taxId: b.taxId, phone: b.phone, userAgent: req.headers["user-agent"] },
+      {
+        userId: req.userId,
+        payload,
+        taxId: b.taxId,
+        phone: b.phone,
+        userAgent: req.headers["user-agent"],
+        expectedEtherUserId,
+      },
       {
         createUserProfile,
         acceptTerms,
         submitPepDeclaration,
         withService,
+        storeRegistrationToken,
         isHouseAccount: async (id) => {
           const house = getHouseEtherUserId();
           return Boolean(house) && String(id).toLowerCase() === house;
@@ -911,6 +964,7 @@ authRouter.post(
       status: linked.etherStatus ?? "pending_documents",
       document_checklist: linked.documentChecklist,
       recovered: linked.recovered,
+      registration_token_valid: linked.registrationTokenStored,
       message: "Cadastro iniciado. Envie os documentos de KYC para liberar a conta.",
     });
   }),
@@ -925,9 +979,16 @@ authRouter.post(
  * propaga erro ao chamador (o onboarding não pode travar por indisponibilidade
  * de terceiro).
  */
-export async function reconcileOnboardingStatus(userId, profile, { getAccountStatus, withService }) {
+export async function reconcileOnboardingStatus(userId, profile, { getAccountStatus, withService, hasRegistrationToken }) {
   if (!profile?.ether_user_id) {
     return { status: "not_started" };
+  }
+
+  // Se dá para enviar documentos agora (token de cadastro válido). null =
+  // não deu para saber: a tela não bloqueia o envio por isso.
+  let registrationTokenValid = null;
+  if (hasRegistrationToken) {
+    registrationTokenValid = await hasRegistrationToken(userId, profile.ether_user_id).catch(() => null);
   }
 
   try {
@@ -950,6 +1011,7 @@ export async function reconcileOnboardingStatus(userId, profile, { getAccountSta
       pix_key: profile.ether_pix_key,
       pix_key_type: profile.ether_pix_key_type,
       checklist: etherStatus?.documentChecklist ?? null,
+      registration_token_valid: registrationTokenValid,
     };
   } catch {
     // Se a Ether estiver fora, retorna o último status conhecido.
@@ -959,6 +1021,7 @@ export async function reconcileOnboardingStatus(userId, profile, { getAccountSta
       pix_key: profile.ether_pix_key,
       pix_key_type: profile.ether_pix_key_type,
       checklist: null,
+      registration_token_valid: registrationTokenValid,
     };
   }
 }
@@ -979,7 +1042,12 @@ authRouter.get(
 
     const { getClientKycStatus } = await import("../ether.js");
     const { withService } = await import("../db.js");
-    const body = await reconcileOnboardingStatus(req.userId, profile, { getAccountStatus: getClientKycStatus, withService });
+    const { hasRegistrationToken } = await import("../registrationTokens.js");
+    const body = await reconcileOnboardingStatus(req.userId, profile, {
+      getAccountStatus: getClientKycStatus,
+      withService,
+      hasRegistrationToken,
+    });
     res.json(body);
   }),
 );
@@ -1014,6 +1082,10 @@ authRouter.use(
     ether: {
       uploadDocument: async (...a) => (await import("../ether.js")).uploadDocument(...a),
       getAccountStatus: async (...a) => (await import("../ether.js")).getClientKycStatus(...a),
+    },
+    registrationTokens: {
+      load: async (...a) => (await import("../registrationTokens.js")).loadRegistrationToken(...a),
+      remove: async (...a) => (await import("../registrationTokens.js")).deleteRegistrationToken(...a),
     },
   }),
 );

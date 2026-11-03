@@ -12,6 +12,7 @@ process.env.PGUSER = "test";
 process.env.PGPASSWORD = "test";
 
 const { createAndLinkEtherAccount, reconcileOnboardingStatus } = await import("../src/routes/auth.js");
+const { registrationTokenExpiry } = await import("../src/registrationTokens.js");
 
 let FAIL = 0;
 function check(label, cond, detail) {
@@ -114,22 +115,23 @@ const base = { userId: USER_ID, payload: { any: "payload" }, taxId: "12345678900
 }
 
 // --- Recusas da Ether: status por tipo de falha ------------------------------
-// Erro de rede/sem status (mock sem .status) -> falha de integração, 502.
+// Erro de rede/sem status (mock sem .status) -> falha de integração, 424
+// (não 502: a borda da DO troca 5xx pela página HTML dela).
 {
   const d = deps({ createUserProfile: async () => { throw Object.assign(new Error("recusado"), { body: { message: "CPF inválido" } }); } });
   try {
     await createAndLinkEtherAccount(base, d);
     check("Ether recusando o cadastro lança erro", false);
   } catch (error) {
-    check("falha sem status HTTP -> 502 PROVIDER_UNAVAILABLE", error.status === 502 && error.code === "PROVIDER_UNAVAILABLE");
+    check("falha sem status HTTP -> 424 PROVIDER_UNAVAILABLE", error.status === 424 && error.code === "PROVIDER_UNAVAILABLE");
   }
 }
 
 for (const [label, etherStatus, body, expStatus, expCode] of [
   ["dado recusado (400 USR_VAL_004)", 400, { error: "Bad Request", message: "USR_VAL_004" }, 422, "ETHER_REJECTED"],
   ["documento duplicado (400 USR_DUP_005)", 400, { error: "Bad Request", message: "USR_DUP_005" }, 409, "ETHER_DUPLICATE_DOCUMENT"],
-  ["WAF/permissão (403)", 403, null, 502, "PROVIDER_UNAVAILABLE"],
-  ["tenant inexistente (404 USR_NOT_001)", 404, { error: "Not Found", message: "USR_NOT_001" }, 502, "PROVIDER_UNAVAILABLE"],
+  ["WAF/permissão (403)", 403, null, 424, "PROVIDER_UNAVAILABLE"],
+  ["tenant inexistente (404 USR_NOT_001)", 404, { error: "Not Found", message: "USR_NOT_001" }, 424, "PROVIDER_UNAVAILABLE"],
 ]) {
   const err = Object.assign(new Error("Ether API error"), { name: "EtherError", status: etherStatus, body });
   const d = deps({ createUserProfile: async () => { throw err; } });
@@ -140,6 +142,64 @@ for (const [label, etherStatus, body, expStatus, expCode] of [
     check(`${label} -> ${expStatus} ${expCode}`, error.status === expStatus && error.code === expCode);
     check(`${label}: mensagem não ecoa o corpo da Ether`, !String(error.message).includes("USR_"));
   }
+}
+
+// --- token de cadastro (recoveryToken) -------------------------------------
+{
+  const stored = [];
+  const acceptArgs = [];
+  const serviceQueries = [];
+  const d = {
+    ...deps({
+      createUserProfile: async () => ({ userId: "ether-abc", user: { status: "pending_documents" }, recoveryToken: "reg.tok.en" }),
+      acceptTerms: async (...a) => { acceptArgs.push(a); },
+      serviceQueries,
+    }),
+    storeRegistrationToken: async (x) => { stored.push(x); },
+  };
+  const result = await createAndLinkEtherAccount(base, d);
+  check("recoveryToken guardado com userId do JWT e ether_user_id da Ether",
+    stored.length === 1 && stored[0].userId === USER_ID && stored[0].etherUserId === "ether-abc" && stored[0].token === "reg.tok.en");
+  check("aceite de termos usa o token de cadastro", acceptArgs[0]?.[2] === "reg.tok.en");
+  check("resultado informa token guardado", result.registrationTokenStored === true);
+  check("status lido de user.status (formato real da Ether)", result.etherStatus === "pending_documents");
+  check("token nunca vai no resultado", !JSON.stringify(result).includes("reg.tok.en"));
+}
+{
+  const d = {
+    ...deps({ createUserProfile: async () => ({ userId: "ether-abc", recoveryToken: "reg.tok.en" }) }),
+    storeRegistrationToken: async () => { throw new Error("cofre fora"); },
+  };
+  const result = await createAndLinkEtherAccount(base, d);
+  check("falha ao guardar o token não derruba o cadastro (registrationTokenStored=false)",
+    result.etherUserId === "ether-abc" && result.registrationTokenStored === false);
+}
+{
+  const acceptArgs = [];
+  const d = deps({ acceptTerms: async (...a) => { acceptArgs.push(a); } });
+  const result = await createAndLinkEtherAccount(base, d);
+  check("sem recoveryToken: aceite segue com o token padrão e nada guardado",
+    acceptArgs[0]?.[2] === undefined && result.registrationTokenStored === false);
+}
+
+// --- reenvio do cadastro (já vinculado) --------------------------------------
+{
+  const serviceQueries = [];
+  const stored = [];
+  const d = { ...deps({ serviceQueries }), storeRegistrationToken: async (x) => { stored.push(x); } };
+  try {
+    await createAndLinkEtherAccount({ ...base, expectedEtherUserId: "ether-OUTRO" }, d);
+    check("reenvio que devolve outro cliente lança erro", false);
+  } catch (error) {
+    check("reenvio que devolve outro cliente -> 409 ETHER_ACCOUNT_MISMATCH", error.status === 409 && error.code === "ETHER_ACCOUNT_MISMATCH");
+    check("reenvio divergente não grava perfil nem token", serviceQueries.length === 0 && stored.length === 0);
+  }
+}
+{
+  const serviceQueries = [];
+  const d = deps({ serviceQueries, createUserProfile: async () => ({ userId: "ether-abc", recovery: true }) });
+  const result = await createAndLinkEtherAccount({ ...base, expectedEtherUserId: "ether-abc" }, d);
+  check("reenvio com o mesmo cliente converge (recovered=true)", result.etherUserId === "ether-abc" && result.recovered === true);
 }
 
 // --- 502: Ether não devolve id -----------------------------------------------
@@ -264,6 +324,34 @@ const profileLinked = { ether_user_id: "ether-abc", ether_account_status: "pendi
   check("Ether fora do ar -> devolve último status conhecido, sem lançar", body.status === "pending");
   check("Ether fora do ar -> checklist null (não inventa dado)", body.checklist === null);
   check("Ether fora do ar -> pix_key preservada do perfil local", body.pix_key === "chave");
+}
+
+{
+  // registration_token_valid: diz à tela se dá para enviar documentos agora.
+  const ok = async () => ({ status: "pending_documents" });
+  const noop = async () => {};
+  const has = await reconcileOnboardingStatus(USER_ID, profileLinked, {
+    getAccountStatus: ok, withService: noop, hasRegistrationToken: async (u, e) => u === USER_ID && e === "ether-abc",
+  });
+  const none = await reconcileOnboardingStatus(USER_ID, profileLinked, {
+    getAccountStatus: ok, withService: noop, hasRegistrationToken: async () => false,
+  });
+  const unknown = await reconcileOnboardingStatus(USER_ID, profileLinked, {
+    getAccountStatus: ok, withService: noop, hasRegistrationToken: async () => { throw new Error("cofre fora"); },
+  });
+  check("token de cadastro válido -> registration_token_valid=true (userId do JWT + ether_user_id)", has.registration_token_valid === true);
+  check("sem token -> registration_token_valid=false", none.registration_token_valid === false);
+  check("cofre indisponível -> registration_token_valid=null (não bloqueia)", unknown.registration_token_valid === null);
+}
+
+// --- validade do token de cadastro ------------------------------------------
+{
+  const now = Date.UTC(2026, 10, 3, 12, 0, 0);
+  const jwt = (exp) => `h.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.s`;
+  const H = 60 * 60 * 1000;
+  check("validade pelo exp do JWT", registrationTokenExpiry(jwt(now / 1000 + 600), now).getTime() === now + 600_000);
+  check("exp além de 48 h é limitado a 48 h", registrationTokenExpiry(jwt(now / 1000 + 100 * 3600), now).getTime() === now + 48 * H);
+  check("token sem exp legível vale 48 h", registrationTokenExpiry("nao-e-jwt", now).getTime() === now + 48 * H);
 }
 
 console.log(FAIL ? `\n${FAIL} falha(s)` : "\ntudo ok");

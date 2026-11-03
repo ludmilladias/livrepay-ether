@@ -58,7 +58,16 @@ function StepBody({ id, isPF, onEdit }: { id: string; isPF: boolean; onEdit: (s:
  * Cadastro de abertura de conta em passos. Os nomes e o formato do payload são os
  * de `onboardingSchema` (server/src/routes/auth.js) — ver `buildPayload`.
  */
-export function OnboardingWizard({ initialType }: { initialType: PersonType | null }) {
+export function OnboardingWizard({
+  initialType,
+  reconfirm = false,
+  onSubmitted,
+}: {
+  initialType: PersonType | null;
+  /** Reenvio por quem já tem cadastro iniciado ("Confirmar meus dados de novo"). */
+  reconfirm?: boolean;
+  onSubmitted?: () => void;
+}) {
   const { user, signOut } = useAuth();
   const submit = useSubmitOnboarding();
   const userId = user?.id;
@@ -165,6 +174,7 @@ export function OnboardingWizard({ initialType }: { initialType: PersonType | nu
       // tela de documentos (KycDocuments), sem navegar.
       await submit.mutateAsync(buildPayload(form.getValues()));
       if (userId) clearOnboardingDraft(userId);
+      onSubmitted?.();
     } catch (err) {
       setServerError(
         err instanceof ApiError ? err.message : "Não foi possível enviar o cadastro. Tente novamente.",
@@ -195,10 +205,11 @@ export function OnboardingWizard({ initialType }: { initialType: PersonType | nu
   return (
     <Card className="w-full max-w-2xl">
       <CardHeader>
-        <CardTitle className="text-2xl">Complete seu cadastro</CardTitle>
+        <CardTitle className="text-2xl">{reconfirm ? "Confirme seus dados" : "Complete seu cadastro"}</CardTitle>
         <CardDescription>
-          Esses dados seguem para a verificação de identidade do banco parceiro. Cobranças e pagamentos só
-          funcionam depois da aprovação da conta.
+          {reconfirm
+            ? "Informe os mesmos dados do cadastro que você já começou. Assim liberamos de novo o envio dos documentos ao banco parceiro; nada é criado em duplicidade."
+            : "Esses dados seguem para a verificação de identidade do banco parceiro. Cobranças e pagamentos só funcionam depois da aprovação da conta."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">

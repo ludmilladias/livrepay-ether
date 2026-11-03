@@ -201,8 +201,58 @@ reset();
 etherUploadResponse = () => new Response("<html>WAF</html>", { status: 403, headers: { "Content-Type": "text/html" } });
 logs.length = 0;
 r = await post("/SELFIE_COM_DOC");
-c("Ether fora/WAF -> 502 PROVIDER_UNAVAILABLE", r.status === 502 && r.json.code === "PROVIDER_UNAVAILABLE", JSON.stringify(r));
+c("Ether fora/WAF -> 424 PROVIDER_UNAVAILABLE (não 502, que a borda troca por HTML)", r.status === 424 && r.json.code === "PROVIDER_UNAVAILABLE", JSON.stringify(r));
 c("preview HTML da Ether não vai para log", !logs.join("\n").includes("WAF"));
+
+// --- token de cadastro (recoveryToken) -------------------------------------
+// Segundo router, igual ao de produção: com o cofre de tokens injetado.
+const USER_NO_TOKEN = "44444444-4444-4444-4444-444444444444";
+profiles[USER_NO_TOKEN] = { ether_user_id: "ether-sem-token", ether_account_status: "pending" };
+const regTokens = { [USER_OK]: { etherUserId: "ether-own", token: "reg-token-secreto" } };
+const removed = [];
+const appT = express();
+appT.use("/docs", createDocumentUploadRouter({
+  loadProfile: async (id) => profiles[id] ?? null,
+  syncLocalStatus: async () => {},
+  ether,
+  registrationTokens: {
+    load: async (userId, etherUserId) => (regTokens[userId]?.etherUserId === etherUserId ? regTokens[userId].token : null),
+    remove: async (userId) => { removed.push(userId); delete regTokens[userId]; },
+  },
+}));
+appT.use(errorHandler);
+const serverT = await new Promise((res) => { const s = appT.listen(0, "127.0.0.1", () => res(s)); });
+const baseT = `http://127.0.0.1:${serverT.address().port}/docs`;
+async function postT(path, user) {
+  const res = await realFetch(`${baseT}${path}`, {
+    method: "POST",
+    headers: { Authorization: tok(user), "Content-Type": "image/png" },
+    body: PNG,
+  });
+  const text = await res.text();
+  return { status: res.status, json: text ? JSON.parse(text) : null };
+}
+
+reset();
+logs.length = 0;
+r = await postT("/SELFIE_COM_DOC", USER_OK);
+const upT = uploadCalls()[0];
+c("com token de cadastro: upload vai à Ether com esse token, não com o do tenant",
+  r.status === 201 && upT?.options?.headers?.Authorization === "Bearer reg-token-secreto" &&
+  !etherCalls.slice(0, etherCalls.indexOf(upT)).some((x) => x.url.endsWith("/auth/authenticate")), JSON.stringify(r));
+c("token de cadastro não aparece em log", !logs.join("\n").includes("reg-token-secreto"));
+
+reset();
+r = await postT("/SELFIE_COM_DOC", USER_NO_TOKEN);
+c("sem token de cadastro -> 409 REGISTRATION_EXPIRED, sem chamar a Ether",
+  r.status === 409 && r.json.code === "REGISTRATION_EXPIRED" && etherCalls.length === 0, JSON.stringify(r));
+
+reset();
+etherUploadResponse = () => jsonRes(401, { message: "Token verification failed" });
+r = await postT("/SELFIE_COM_DOC", USER_OK);
+c("Ether recusa o token (401) -> 409 REGISTRATION_EXPIRED e o token é descartado",
+  r.status === 409 && r.json.code === "REGISTRATION_EXPIRED" && removed.includes(USER_OK), JSON.stringify(r));
+serverT.close();
 
 // --- privacidade nos logs --------------------------------------------------
 reset();

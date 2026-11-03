@@ -129,6 +129,8 @@ export interface OnboardingResult {
   ether_user_id: string;
   status: string;
   document_checklist?: unknown;
+  /** Se o token que autoriza o envio de documentos ficou guardado. */
+  registration_token_valid?: boolean;
   message: string;
 }
 
@@ -143,6 +145,12 @@ export interface OnboardingStatus {
   pix_key?: string | null;
   pix_key_type?: string | null;
   checklist?: unknown;
+  /**
+   * Se dá para enviar documentos agora. `false`: o acesso ao cadastro no banco
+   * parceiro (válido por 48 h) venceu ou não existe e o cliente precisa confirmar
+   * os dados de novo. `null`/ausente: não deu para saber, não bloqueia.
+   */
+  registration_token_valid?: boolean | null;
 }
 
 export interface UploadResult {
@@ -276,6 +284,7 @@ export function useSubmitOnboarding() {
         ether_user_id: result.ether_user_id,
         status: result.status,
         checklist: result.document_checklist ?? null,
+        registration_token_valid: result.registration_token_valid ?? null,
       });
       queryClient.invalidateQueries({ queryKey: ["profile"] });
     },
@@ -300,6 +309,8 @@ export function uploadErrorMessage(err: unknown): string {
         return "Não conseguimos enviar agora por instabilidade do nosso parceiro bancário. Tente de novo em alguns minutos.";
       case "EMPTY_FILE":
         return "O arquivo está vazio. Escolha outro arquivo.";
+      case "REGISTRATION_EXPIRED":
+        return "Para enviar documentos, confirme seus dados de novo (botão acima).";
       default:
         if (err.status === 429) return "Muitos envios seguidos. Aguarde alguns minutos e tente novamente.";
         if (err.status === 401) return "Sua sessão expirou. Entre novamente para continuar.";
@@ -361,6 +372,13 @@ export function useUploadDocument() {
       }));
     },
     onError: (err) => {
+      // Acesso ao cadastro vencido: a tela passa a pedir a reconfirmação dos dados.
+      if (err instanceof ApiError && err.code === "REGISTRATION_EXPIRED") {
+        queryClient.setQueryData<OnboardingStatus>(statusKey, (old) =>
+          old ? { ...old, registration_token_valid: false } : old,
+        );
+        return;
+      }
       // Estados que mudam o que a tela deve mostrar: reconsulta.
       // Falha ambígua (rede/provedor): o envio pode ter chegado, então reconsulta para a tela não mentir.
       const ambiguous = !(err instanceof ApiError) || err.code === "PROVIDER_UNAVAILABLE" || err.status >= 500;
