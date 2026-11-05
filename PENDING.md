@@ -930,6 +930,50 @@ Contas de diagnóstico criadas nos testes de hoje, com CPF fictício (não são 
 
 ---
 
+### 2026-11-05 — o que falta para abrir para cliente (checklist consolidado)
+
+**Módulos por conta (novo):** `account_modules` (migration `20261031000000`), `has_module()`,
+`admin_set_module()` (só admin), `requireModule()` na API, interruptor "Cripto" em Admin →
+Usuários, `useHasModule`/`RequireModule` no frontend, teste **T43**. `GET /auth/me` devolve
+`modules` numa consulta à parte que tolera a tabela ausente (42P01). **A migration ainda NÃO foi
+aplicada em produção** (conexão ao Postgres gerenciado deu timeout em 2026-11-05: provável IP
+fora dos Trusted Sources do cluster). Remover a tolerância a 42P01 depois de aplicar. Não há
+funcionalidade cripto atrás do módulo: só a base de liberação por conta.
+
+**O que a tela da Ether mostrou (conta pessoal, só leitura, 2026-11-05):** menu Extrato, Stocks e
+ETFs, Treasury (cartão cripto virtual na Polygon), Depósitos (Pix/cripto), Pagamentos (boleto),
+Exchange (comprar, vender, transferir, converter, receber), Saques, Comex (cobranças). Tokens
+BTC/ETH/USDC/USDT/BRT. Redes para carteira: Bitcoin, Ethereum, Polygon, Solana, Base, Tron,
+BSC. Depósito Pix de R$ 1,00: taxa R$ 0,01. Compra simulada de R$ 100 em USDT na Polygon:
+cotação R$ 5,46, "tarifa 0.9" (unidade não informada, aparenta ~0,9%), 18,16349 USDT. Venda e
+Saque Pix não simulam sem saldo e sem chave Pix cadastrada. Uma carteira Polygon foi criada
+nessa conta pessoal (sem saldo). Tarifas de venda e saque: perguntar à Ether.
+
+**Bloqueadores externos (Ether) — sem eles nenhum cliente movimenta dinheiro:**
+1. Credencial de escopo de USUÁRIO da conta da casa (`userId e9c48093…`) →
+   `ETHER_HOUSE_CLIENT_ID/SECRET`. Sem ela, nem a LivrePay opera Pix/boleto (`PIX_USR_002`).
+2. Credencial de usuário de CADA cliente, gerada manualmente pela Ether (sem API, sem prazo).
+   Falta o caminho de ingestão no cofre (decidido esperar até haver cliente real).
+3. Qual credencial a `pep-declaration` aceita (recusada com tenant e `recoveryToken`).
+4. Segredo real do webhook → `ETHER_WEBHOOK_SECRET` e só então
+   `ETHER_WEBHOOK_REQUIRE_SIGNATURE=1`. Tratar `pix.deposit.reversed` (hoje ignorado).
+5. Regenerar o `clientSecret` do tenant (apareceu em captura de tela).
+
+**Nossos, antes de ligar dinheiro de cliente:**
+1. Aplicar a migration de módulos em produção (liberar o IP no cluster ou aplicar pelo deploy).
+2. Separar quem cria de quem verifica recebível e exigir MFA de admin (risco I2).
+3. Lançar o saldo inicial no ledger espelhando o saldo da Ether na conta da casa.
+4. Teste real controlado, feito por pessoa: R$ 1,00 de Pix (cobrança + webhook + ledger +
+   saldo) e depois saque de R$ 0,10, cada passo com confirmação.
+5. Rotação de segredos, observabilidade/alertas, backup e restore testado do Postgres.
+6. Termos de uso, política de privacidade e canal de suporte visíveis ao cliente.
+7. Remover Alice/Bob/Carol de teste do banco (só com OK, depois de ver saldo e movimentos).
+
+**Fora do escopo do primeiro lançamento (telas de demonstração, sinalizadas com PreviewBanner):**
+Cartões, Seguros, Cripto, Paraguai (câmbio BRL↔USD, com consulta cambial/legal pendente).
+
+---
+
 ## 2. Módulos com dado 100% fictício (maior pendência restante)
 
 Estas 12 páginas ainda são as telas geradas originalmente (fora deste ciclo de correções): arrays

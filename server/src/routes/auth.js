@@ -347,10 +347,7 @@ authRouter.get(
         `select p.id, p.full_name, p.tax_id, p.phone,
                 p.ether_user_id, p.ether_account_status, p.ether_pix_key,
                 p.ether_pix_key_type,
-                coalesce(array_agg(r.role::text) filter (where r.role is not null), '{}') as roles,
-                coalesce((select array_agg(m.module order by m.module)
-                            from public.account_modules m
-                           where m.user_id = p.id and m.revoked_at is null), '{}') as modules
+                coalesce(array_agg(r.role::text) filter (where r.role is not null), '{}') as roles
            from public.profiles p
            left join public.user_roles r on r.user_id = p.id
           where p.id = $1
@@ -361,7 +358,24 @@ authRouter.get(
     });
 
     if (!profile) throw new ApiError(404, "Perfil não encontrado");
-    res.json(profile);
+
+    // Módulos contratados, em consulta própria: se a tabela ainda não existir (migration
+    // 20261031000000 não aplicada), o perfil e o login seguem funcionando sem módulos.
+    let modules = [];
+    try {
+      modules = await withUser(req.userId, async (client) => {
+        const { rows } = await client.query(
+          `select coalesce(array_agg(module order by module), '{}') as modules
+             from public.account_modules where user_id = $1 and revoked_at is null`,
+          [req.userId],
+        );
+        return rows[0]?.modules ?? [];
+      });
+    } catch (error) {
+      if (error?.code !== "42P01") throw error; // 42P01 = undefined_table
+    }
+
+    res.json({ ...profile, modules });
   }),
 );
 
