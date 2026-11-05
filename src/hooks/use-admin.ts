@@ -163,6 +163,37 @@ export function useRemoveRole() {
   });
 }
 
+// --- Módulos por conta -----------------------------------------------------------
+
+export type AccountModule = "crypto";
+
+const adminModulesKey = ["admin", "modules"] as const;
+
+export function useAdminModules() {
+  return useQuery({
+    queryKey: adminModulesKey,
+    queryFn: () => api.get<{ user_id: string; module: AccountModule }[]>("/admin/modules"),
+  });
+}
+
+export function useSetModule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      userId,
+      module,
+      enabled,
+    }: {
+      userId: string;
+      module: AccountModule;
+      enabled: boolean;
+    }) => api.put(`/admin/users/${userId}/modules`, { module, enabled }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: adminModulesKey });
+    },
+  });
+}
+
 // --- Credenciais da Ether por cliente --------------------------------------------
 
 /** Só metadados: o servidor nunca devolve o clientSecret. */

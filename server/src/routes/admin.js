@@ -237,6 +237,43 @@ adminRouter.delete(
   }),
 );
 
+// --- Módulos por conta ---------------------------------------------------------
+// Quem concede/revoga é admin (admin_set_module() checa has_role no banco).
+const moduleBody = z.object({ module: z.enum(["crypto"]), enabled: z.boolean() });
+
+// Lista os módulos ativos de todas as contas (a policy "admin le todos" faz o
+// filtro: para compliance a lista vem vazia).
+adminRouter.get(
+  "/modules",
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    const rows = await withUser(req.userId, async (client) => {
+      const { rows } = await client.query(
+        `select user_id, module from public.account_modules where revoked_at is null`,
+      );
+      return rows;
+    });
+    res.json(rows);
+  }),
+);
+
+adminRouter.put(
+  "/users/:id/modules",
+  requireRole("admin"),
+  validate(moduleBody),
+  asyncRoute(async (req, res) => {
+    if (!z.string().uuid().safeParse(req.params.id).success) throw new ApiError(400, "ID inválido");
+    await withUser(req.userId, async (client) => {
+      await client.query(`select public.admin_set_module($1, $2, $3)`, [
+        req.params.id,
+        req.body.module,
+        req.body.enabled,
+      ]);
+    });
+    res.status(204).end();
+  }),
+);
+
 // --- Credenciais da Ether -----------------------------------------------------
 //
 // Ninguém digita clientId/clientSecret: credencial é coisa do servidor.

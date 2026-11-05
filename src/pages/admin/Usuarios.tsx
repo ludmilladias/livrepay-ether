@@ -8,7 +8,15 @@ import {
 import { X } from "lucide-react"
 import { toast } from "sonner"
 import { useState } from "react"
-import { useAdminUsers, useAssignRole, useRemoveRole, type AdminUser } from "@/hooks/use-admin"
+import { Switch } from "@/components/ui/switch"
+import {
+  useAdminModules,
+  useAdminUsers,
+  useAssignRole,
+  useRemoveRole,
+  useSetModule,
+  type AdminUser,
+} from "@/hooks/use-admin"
 
 const ALL_ROLES = ["admin", "compliance", "support", "viewer"] as const
 
@@ -23,9 +31,24 @@ const Usuarios = () => {
   const { data, isLoading, isError } = useAdminUsers()
   const assignRole = useAssignRole()
   const removeRole = useRemoveRole()
+  const { data: modules } = useAdminModules()
+  const setModule = useSetModule()
   const [selecting, setSelecting] = useState<Record<string, string>>({})
 
   const rows = data ?? []
+  const hasCrypto = (userId: string) =>
+    !!modules?.some((m) => m.user_id === userId && m.module === "crypto")
+
+  async function handleCrypto(user: AdminUser, enabled: boolean) {
+    try {
+      await setModule.mutateAsync({ userId: user.id, module: "crypto", enabled })
+      toast.success(
+        `Módulo Cripto ${enabled ? "habilitado" : "desabilitado"} para ${user.full_name ?? user.email}.`,
+      )
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível alterar o módulo.")
+    }
+  }
 
   async function handleAssign(user: AdminUser) {
     const role = selecting[user.id]
@@ -82,6 +105,7 @@ const Usuarios = () => {
                   <TableHead>Nome</TableHead>
                   <TableHead>E-mail</TableHead>
                   <TableHead>Roles</TableHead>
+                  <TableHead>Cripto</TableHead>
                   <TableHead className="text-right">Atribuir</TableHead>
                 </TableRow>
               </TableHeader>
@@ -113,6 +137,14 @@ const Usuarios = () => {
                           </Badge>
                         ))}
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      <Switch
+                        checked={hasCrypto(user.id)}
+                        disabled={setModule.isPending}
+                        onCheckedChange={(v) => void handleCrypto(user, v)}
+                        aria-label={`Módulo Cripto de ${user.full_name ?? user.email}`}
+                      />
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">

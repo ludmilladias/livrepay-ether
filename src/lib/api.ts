@@ -248,6 +248,8 @@ export const auth = {
       tax_id: string | null;
       phone: string | null;
       roles: string[];
+      /** Módulos contratados pela conta (ex.: "crypto"); vazio = só o básico. */
+      modules?: string[];
       /** Vocabulário LOCAL (pending|basic|full|rejected), não o cru da Ether. */
       ether_account_status?: string | null;
     }>("GET", "/auth/me"),
@@ -258,6 +260,7 @@ export const auth = {
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {}),
+  put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body ?? {}),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body ?? {}),
   delete: <T>(path: string) => request<T>("DELETE", path),
   /**

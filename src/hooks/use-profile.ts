@@ -21,6 +21,12 @@ export function useProfile() {
   });
 }
 
+/** Atalho para esconder menu/tela de módulo não contratado (UX; o banco decide). */
+export function useHasModule(module: string): boolean {
+  const { data } = useProfile();
+  return !!data?.modules?.includes(module);
+}
+
 /** Atalho para gates de UI: `true` se o usuário tem ao menos uma role de staff. */
 export function useIsStaff(): boolean {
   const { data } = useProfile();

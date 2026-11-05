@@ -347,7 +347,10 @@ authRouter.get(
         `select p.id, p.full_name, p.tax_id, p.phone,
                 p.ether_user_id, p.ether_account_status, p.ether_pix_key,
                 p.ether_pix_key_type,
-                coalesce(array_agg(r.role::text) filter (where r.role is not null), '{}') as roles
+                coalesce(array_agg(r.role::text) filter (where r.role is not null), '{}') as roles,
+                coalesce((select array_agg(m.module order by m.module)
+                            from public.account_modules m
+                           where m.user_id = p.id and m.revoked_at is null), '{}') as modules
            from public.profiles p
            left join public.user_roles r on r.user_id = p.id
           where p.id = $1

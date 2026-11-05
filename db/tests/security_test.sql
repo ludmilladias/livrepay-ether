@@ -1310,6 +1310,65 @@ begin
   raise notice 'T42 OK: auditoria registra a credencial sem o segredo';
 end $$;
 
+-- --- T43: módulos por conta — só admin concede; usuário só lê o seu --------
+reset role;
+do $$
+declare _n int; _ok boolean;
+begin
+  -- Alice (já usada nos testes) não é admin aqui: remove a role que T31 deu.
+  delete from public.user_roles where user_id = '11111111-1111-1111-1111-111111111111';
+  perform set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', true);
+  set local role authenticated;
+
+  _ok := false;
+  begin
+    perform public.admin_set_module('11111111-1111-1111-1111-111111111111', 'crypto', true);
+  exception when others then
+    _ok := sqlerrm like '%Apenas admin%';
+  end;
+  if not _ok then raise exception 'T43 FALHA: nao-admin concedeu modulo a si mesmo'; end if;
+
+  _ok := false;
+  begin
+    insert into public.account_modules (user_id, module, enabled_by)
+    values ('11111111-1111-1111-1111-111111111111', 'crypto', '11111111-1111-1111-1111-111111111111');
+  exception when insufficient_privilege then _ok := true;
+  end;
+  if not _ok then raise exception 'T43 FALHA: INSERT direto em account_modules permitido'; end if;
+  if public.has_module('11111111-1111-1111-1111-111111111111', 'crypto') then
+    raise exception 'T43 FALHA: conta sem modulo aparece com modulo';
+  end if;
+  reset role;
+
+  -- Admin (Bob) concede à Alice; Alice passa a ter; Bob/outros não leem a linha dela por RLS comum.
+  insert into public.user_roles (user_id, role) values ('22222222-2222-2222-2222-222222222222', 'admin')
+    on conflict do nothing;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-2222-2222-222222222222', true);
+  set local role authenticated;
+  perform public.admin_set_module('11111111-1111-1111-1111-111111111111', 'crypto', true);
+  perform public.admin_set_module('11111111-1111-1111-1111-111111111111', 'crypto', true); -- idempotente
+  reset role;
+  if not public.has_module('11111111-1111-1111-1111-111111111111', 'crypto') then
+    raise exception 'T43 FALHA: modulo concedido nao vale';
+  end if;
+  if public.has_module('22222222-2222-2222-2222-222222222222', 'crypto') then
+    raise exception 'T43 FALHA: modulo vazou para outra conta';
+  end if;
+
+  -- Revogar desliga e mantém histórico.
+  perform set_config('request.jwt.claim.sub', '22222222-2222-2222-2222-222222222222', true);
+  set local role authenticated;
+  perform public.admin_set_module('11111111-1111-1111-1111-111111111111', 'crypto', false);
+  reset role;
+  if public.has_module('11111111-1111-1111-1111-111111111111', 'crypto') then
+    raise exception 'T43 FALHA: modulo revogado continua ativo';
+  end if;
+  select count(*) into _n from public.account_modules
+   where user_id = '11111111-1111-1111-1111-111111111111' and revoked_at is not null;
+  if _n <> 1 then raise exception 'T43 FALHA: historico de revogacao perdido (%)', _n; end if;
+  raise notice 'T43 OK: modulos so por admin, isolados por conta, revogaveis com historico';
+end $$;
+
 -- --- Resumo ---------------------------------------------------------------
 reset role;
 do $$

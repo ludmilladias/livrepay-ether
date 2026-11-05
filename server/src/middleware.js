@@ -60,6 +60,31 @@ export function requireRole(...roles) {
 }
 
 /**
+ * Exige que a conta tenha o módulo contratado (public.account_modules). A decisão
+ * vem de has_module() no banco; conta sem o módulo recebe 403 MODULE_NOT_ENABLED,
+ * igual para módulo inexistente (não revela quais módulos existem).
+ */
+export function requireModule(moduleName) {
+  return async (req, _res, next) => {
+    try {
+      const enabled = await withUser(req.userId, async (client) => {
+        const { rows } = await client.query(`select public.has_module($1, $2) as ok`, [
+          req.userId,
+          moduleName,
+        ]);
+        return rows[0]?.ok === true;
+      });
+      if (!enabled) {
+        return next(new ApiError(403, "Módulo não habilitado para esta conta", "MODULE_NOT_ENABLED"));
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+/**
  * Callback `verify` do express.json: guarda os BYTES recebidos em req.rawBody,
  * só para /webhooks. Assinatura de emissor (HMAC) é sobre os bytes enviados —
  * recalcular sobre JSON.stringify(req.body) quebra com qualquer diferença de
