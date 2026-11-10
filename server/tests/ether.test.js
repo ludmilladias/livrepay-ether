@@ -333,6 +333,18 @@ async function testClientKycStatus() {
   ({ result } = await withMockFetch([router({ user: {} }, jsonResponse(200, checklist))], () => ether.getClientKycStatus("u-1").catch((e) => e)));
   if (result?.name === "EtherError") ok("perfil sem status -> erro (não inventa status)");
   else bad("perfil sem status", JSON.stringify(result));
+
+  // Status "pending" (visto em produção 2026-11-10): decidido pelo checklist.
+  const n = ether.normalizeKycStatus;
+  const empty = { pending: [], uploaded: [{ type: "CARTAO_CNPJ" }], rejected: [] };
+  if (n("pending", empty) === "pending_analysis") ok("pending + nada faltando -> pending_analysis");
+  else bad("pending sem pendência", n("pending", empty));
+  if (n("pending", checklist) === "pending_documents") ok("pending + documento faltando -> pending_documents");
+  else bad("pending com pendência", n("pending", checklist));
+  if (n("pending", { pending: [], uploaded: [], rejected: [{ type: "X" }] }) === "pending_documents") ok("pending + documento recusado -> pending_documents");
+  else bad("pending com recusa");
+  if (n("pending", null) === "pending" && n("active", empty) === "active") ok("sem checklist ou outro status: inalterado");
+  else bad("normalização indevida");
 }
 
 async function main() {

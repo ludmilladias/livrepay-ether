@@ -442,7 +442,20 @@ export async function getClientKycStatus(userId) {
     throw new EtherError(502, { error: "StatusAusente" });
   }
   const checklist = await call("GET", `/users/${id}/document-requirements`).catch(() => null);
-  return { status, documentChecklist: checklist ?? null };
+  return { status: normalizeKycStatus(status, checklist), documentChecklist: checklist ?? null };
+}
+
+/**
+ * A Ether também devolve `pending` (fora do vocabulário documentado), visto em
+ * 2026-11-10 com todos os documentos enviados. Pelo checklist dá para dizer qual
+ * é: falta documento -> pending_documents; nada falta -> pending_analysis. Sem
+ * checklist o valor fica como veio (a tela trata como "não deu para confirmar").
+ */
+export function normalizeKycStatus(status, checklist) {
+  if (status !== "pending" || !checklist) return status;
+  const pending = Array.isArray(checklist.pending) ? checklist.pending.length : 0;
+  const rejected = Array.isArray(checklist.rejected) ? checklist.rejected.length : 0;
+  return pending + rejected > 0 ? "pending_documents" : "pending_analysis";
 }
 
 // ---------------------------------------------------------------------------
