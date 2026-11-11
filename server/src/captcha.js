@@ -7,12 +7,21 @@ const TIMEOUT_MS = 5_000;
 /**
  * Valida o token do reCAPTCHA v2 no Google. Devolve true/false; lança se o
  * Google não responder (quem chama decide: aqui falhamos FECHADO).
+ * Um token só valida com o secret da chave que o emitiu: tenta cada secret
+ * configurado (LivrePay, VARKI) e aceita se algum confirmar.
  */
 export async function verifyRecaptcha(token, remoteIp) {
+  for (const secret of config.recaptcha.secrets) {
+    if (await verifyWithSecret(secret, token, remoteIp)) return true;
+  }
+  return false;
+}
+
+async function verifyWithSecret(secret, token, remoteIp) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const body = new URLSearchParams({ secret: config.recaptcha.secret, response: token });
+    const body = new URLSearchParams({ secret, response: token });
     if (remoteIp) body.set("remoteip", remoteIp);
     const response = await fetch(VERIFY_URL, { method: "POST", body, signal: controller.signal });
     if (!response.ok) throw new Error(`siteverify HTTP ${response.status}`);
@@ -25,12 +34,12 @@ export async function verifyRecaptcha(token, remoteIp) {
 
 /**
  * Middleware: exige `captchaToken` no corpo e o valida. Roda ANTES do `validate`
- * (que descarta chaves desconhecidas). Sem RECAPTCHA_SECRET, não faz nada.
+ * (que descarta chaves desconhecidas). Sem nenhum secret, não faz nada.
  *
  * Mensagens estáticas: nada do retorno do Google vai ao cliente nem ao log.
  */
 export function requireCaptcha(req, _res, next) {
-  if (!config.recaptcha.secret) return next();
+  if (config.recaptcha.secrets.length === 0) return next();
 
   const token = req.body?.captchaToken;
   if (typeof token !== "string" || token.length < 10 || token.length > 4096) {

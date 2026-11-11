@@ -121,11 +121,13 @@ export const config = {
   // do load balancer, cada uma conta separado e o teto deixa de valer de verdade.
   redisUrl: optional("REDIS_URL", ""),
 
-  // reCAPTCHA v2 (checkbox). Sem RECAPTCHA_SECRET a verificação é desligada (útil
+  // reCAPTCHA v2 (checkbox). Sem nenhum secret a verificação é desligada (útil
   // em dev e para ligar a chave em produção sem derrubar o login); com ele, falta
   // ou falha do token barra a requisição.
+  // Cada frontend (LivrePay, VARKI) tem a sua chave de site: o backend compartilhado
+  // aceita o token se ALGUM dos secrets o validar. RECAPTCHA_SECRET_VARKI é opcional.
   recaptcha: {
-    secret: optional("RECAPTCHA_SECRET", ""),
+    secrets: [optional("RECAPTCHA_SECRET", ""), optional("RECAPTCHA_SECRET_VARKI", "")].filter(Boolean),
   },
 
   // E-mail transacional (redefinição de senha). Provedor, em ordem de preferência:
@@ -149,7 +151,7 @@ if (config.ether.houseUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
   throw new Error("ETHER_HOUSE_USER_ID deve ser o UUID da conta da LivrePay na Ether");
 }
 
-if (isProduction && !config.recaptcha.secret) {
+if (isProduction && config.recaptcha.secrets.length === 0) {
   console.warn("RECAPTCHA_SECRET não definida em produção — login/cadastro/esqueci-a-senha sem reCAPTCHA.");
 }
 export const sesConfigured = Boolean(

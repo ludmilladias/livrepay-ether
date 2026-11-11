@@ -20,7 +20,8 @@
     "test:mailer": "node tests/mailer-ses.test.js",
     "test:ether-credentials": "node tests/ether-credentials.test.js",
     "test:admin-credentials": "node tests/admin-ether-credentials.test.js",
-    "test:money-routes": "node tests/money-routes.test.js"
+    "test:money-routes": "node tests/money-routes.test.js",
+    "test:captcha": "node tests/captcha.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-sesv2": "^3.1159.0",
