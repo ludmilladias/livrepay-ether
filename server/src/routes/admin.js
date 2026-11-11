@@ -21,9 +21,10 @@ adminRouter.get(
   asyncRoute(async (req, res) => {
     const counts = await withUser(req.userId, async (client) => {
       const [pendingReceivables, failedEvents, users] = await Promise.all([
+        // Lista por admin_receivables_list() (SECURITY DEFINER): o admin não lê `receivables`
+        // direto (policy de staff removida em 20261006000000), então um COUNT direto dava sempre 0.
         client.query(
-          `select count(*)::int as n from public.receivables
-            where status in ('scheduled','overdue') and verified_at is null`,
+          `select count(*)::int as n from public.admin_receivables_list() where verified_at is null`,
         ),
         client.query(
           `select count(*)::int as n from public.provider_events where error is not null`,
@@ -115,6 +116,121 @@ adminRouter.post(
       return rows[0];
     });
     res.json(result);
+  }),
+);
+
+// --- Agências (tenants): limites, suspensão e conciliação --------------------
+//
+// Visão da PLATAFORMA. Ler: admin/compliance; alterar limites e suspender: só admin (a
+// função do banco também exige). A Ether não conhece agência: tudo isto é controle nosso.
+const slugParam = (value) => {
+  const parsed = z.string().regex(/^[a-z0-9-]{2,40}$/).safeParse(value);
+  if (!parsed.success) throw new ApiError(400, "Agência inválida");
+  return parsed.data;
+};
+
+// Mensagens de negócio das funções do banco viram erro de requisição, não 500.
+function tenantAdminError(error) {
+  const message = String(error?.message ?? "");
+  if (message.includes("Agência não encontrada")) return new ApiError(404, "Agência não encontrada");
+  if (/^(Informe o motivo|Status inválido|A plataforma não pode)/.test(message)) {
+    return new ApiError(400, message);
+  }
+  return error;
+}
+
+adminRouter.get(
+  "/tenants",
+  asyncRoute(async (req, res) => {
+    const rows = await withUser(req.userId, async (client) => {
+      const result = await client.query(`select * from public.admin_tenants_overview()`);
+      return result.rows;
+    });
+    res.json(rows);
+  }),
+);
+
+adminRouter.get(
+  "/tenants/:slug/movement",
+  asyncRoute(async (req, res) => {
+    const slug = slugParam(req.params.slug);
+    try {
+      const rows = await withUser(req.userId, async (client) => {
+        const result = await client.query(`select * from public.admin_tenant_daily_movement($1)`, [slug]);
+        return result.rows;
+      });
+      res.json(rows);
+    } catch (error) {
+      throw tenantAdminError(error);
+    }
+  }),
+);
+
+// null = sem limite. Valores em centavos (inteiros positivos).
+const limitCents = z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable();
+const limitsBody = z.object({
+  max_receivable_cents: limitCents,
+  max_exposure_cents: limitCents,
+  max_daily_advance_cents: limitCents,
+});
+
+adminRouter.put(
+  "/tenants/:slug/limits",
+  requireRole("admin"),
+  validate(limitsBody),
+  asyncRoute(async (req, res) => {
+    const slug = slugParam(req.params.slug);
+    const { max_receivable_cents, max_exposure_cents, max_daily_advance_cents } = req.body;
+    try {
+      const row = await withUser(req.userId, async (client) => {
+        const { rows } = await client.query(
+          `select * from public.admin_set_tenant_limits($1, $2, $3, $4)`,
+          [slug, max_receivable_cents, max_exposure_cents, max_daily_advance_cents],
+        );
+        return rows[0];
+      });
+      res.json(row);
+    } catch (error) {
+      throw tenantAdminError(error);
+    }
+  }),
+);
+
+adminRouter.post(
+  "/tenants/:slug/suspend",
+  requireRole("admin"),
+  validate(z.object({ reason: z.string().trim().min(3, "Informe o motivo").max(500) })),
+  asyncRoute(async (req, res) => {
+    const slug = slugParam(req.params.slug);
+    try {
+      const row = await withUser(req.userId, async (client) => {
+        const { rows } = await client.query(`select * from public.admin_set_tenant_status($1, 'suspended', $2)`, [
+          slug,
+          req.body.reason,
+        ]);
+        return rows[0];
+      });
+      res.json({ slug: row.slug, status: row.status, suspended_at: row.suspended_at });
+    } catch (error) {
+      throw tenantAdminError(error);
+    }
+  }),
+);
+
+adminRouter.post(
+  "/tenants/:slug/reactivate",
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    const slug = slugParam(req.params.slug);
+    try {
+      const row = await withUser(req.userId, async (client) => {
+        const { rows } = await client.query(`select * from public.admin_set_tenant_status($1, 'active', null)`, [slug]);
+        return rows[0];
+      });
+      res.json({ slug: row.slug, status: row.status });
+    } catch (error) {
+      throw tenantAdminError(error);
+    }
   }),
 );
 

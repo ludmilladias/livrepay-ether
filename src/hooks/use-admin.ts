@@ -33,6 +33,10 @@ export interface AdminReceivable {
   rejected_at: string | null;
   rejection_reason: string | null;
   created_at: string;
+  /** Agência (tenant) do dono do recebível. */
+  tenant_slug: string | null;
+  /** Pré-aprovado pela equipe da agência (não libera crédito; a verificação final é da plataforma). */
+  tenant_reviewed_at: string | null;
 }
 
 const adminReceivablesKey = ["admin", "receivables"] as const;
@@ -272,6 +276,90 @@ export function useRevokeEtherCredential() {
     mutationFn: (userId: string) => api.post(`/admin/users/${userId}/ether-credential/revoke`),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: etherCredentialsKey });
+    },
+  });
+}
+
+// --- Agências (tenants): limites, suspensão e conciliação -----------------------
+// A Ether não conhece agência: estes controles são só do LivrePay (valem no banco).
+
+export interface AdminTenant {
+  slug: string;
+  name: string;
+  status: "active" | "suspended";
+  suspended_at: string | null;
+  suspended_reason: string | null;
+  customers: number;
+  balance_cents: number;
+  credits_30d_cents: number;
+  debits_30d_cents: number;
+  advanced_exposure_cents: number;
+  advanced_today_cents: number;
+  pending_receivables: number;
+  /** null = sem limite */
+  max_receivable_cents: number | null;
+  max_exposure_cents: number | null;
+  max_daily_advance_cents: number | null;
+}
+
+export interface TenantLimitsInput {
+  max_receivable_cents: number | null;
+  max_exposure_cents: number | null;
+  max_daily_advance_cents: number | null;
+}
+
+const adminTenantsKey = ["admin", "tenants"] as const;
+
+export function useAdminTenants() {
+  return useQuery({
+    queryKey: adminTenantsKey,
+    queryFn: () => api.get<AdminTenant[]>("/admin/tenants"),
+  });
+}
+
+export interface TenantMovementDay {
+  day: string;
+  credits_cents: number;
+  debits_cents: number;
+}
+
+/** Entradas e saídas por dia (30 dias) de uma agência; só busca quando `enabled`. */
+export function useAdminTenantMovement(slug: string | null) {
+  return useQuery({
+    queryKey: ["admin", "tenants", slug, "movement"],
+    queryFn: () => api.get<TenantMovementDay[]>(`/admin/tenants/${slug}/movement`),
+    enabled: !!slug,
+  });
+}
+
+export function useSetTenantLimits() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, limits }: { slug: string; limits: TenantLimitsInput }) =>
+      api.put(`/admin/tenants/${slug}/limits`, limits),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: adminTenantsKey });
+    },
+  });
+}
+
+export function useSuspendTenant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, reason }: { slug: string; reason: string }) =>
+      api.post(`/admin/tenants/${slug}/suspend`, { reason }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: adminTenantsKey });
+    },
+  });
+}
+
+export function useReactivateTenant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => api.post(`/admin/tenants/${slug}/reactivate`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: adminTenantsKey });
     },
   });
 }

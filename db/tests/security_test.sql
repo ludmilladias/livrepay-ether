@@ -1771,6 +1771,304 @@ end $$;
 
 reset role;
 
+-- ===========================================================================
+-- CONTROLES DE AGÊNCIA (20261111120000_agency_controls.sql): limites, suspensão, conciliação
+-- ===========================================================================
+reset role;
+insert into auth.users (id, email, password_hash, raw_user_meta_data) values
+  ('aaaaaaaa-0000-0000-0000-000000000020', 'ada@platform.test', 'x', '{"full_name":"Ada"}');
+insert into public.user_roles (user_id, role) values ('aaaaaaaa-0000-0000-0000-000000000020', 'admin');
+
+-- --- T57: limite por recebível (antecipação e pré-aprovação) -----------------
+set role authenticated;
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance plataforma)
+select public.verify_receivable((select id from public.admin_receivables_list() where gross_cents = 410000));
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020'; -- Ada (admin plataforma)
+select public.admin_set_tenant_limits('varki', 300000, null, null);
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve
+do $$
+declare _rec uuid; _before bigint; _after bigint; _msg text;
+begin
+  select id into _rec from public.receivables where gross_cents = 410000;
+  select balance_cents into _before from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  begin perform public.advance_receivable(_rec); exception when others then _msg := sqlerrm; end;
+  if _msg is null then raise exception 'T57 FALHOU: antecipou recebivel acima do limite da agencia'; end if;
+  if _msg not like 'Limite da agência: valor%' then raise exception 'T57 FALHOU: barrado pelo motivo errado: %', _msg; end if;
+  select balance_cents into _after from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  if _after <> _before then raise exception 'T57 FALHOU: saldo mudou'; end if;
+  raise notice 'T57 OK: antecipacao respeita o limite por recebivel';
+end $$;
+
+reset role;
+do $$
+declare _c uuid;
+begin
+  select id into _c from public.receivable_contracts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e' limit 1;
+  insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+  values ('aaaaaaaa-0000-0000-0000-00000000000e', _c, 800000, 790000, current_date + 12);
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank (admin VARKI)
+do $$
+declare _rec uuid; _blocked boolean := false;
+begin
+  select id into _rec from public.tenant_receivables_list() where gross_cents = 800000;
+  begin perform public.tenant_approve_receivable(_rec); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T57 FALHOU: equipe pre-aprovou recebivel acima do limite da agencia'; end if;
+  raise notice 'T57 OK: pre-aprovacao respeita o limite por recebivel';
+end $$;
+
+-- --- T58: limites são editáveis só pela plataforma e invisíveis a clientes ----
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform public.admin_set_tenant_limits('varki', null, null, null); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T58 FALHOU: staff de tenant alterou limites da propria agencia'; end if;
+  raise notice 'T58 OK: staff de tenant nao altera limites';
+end $$;
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance, nao admin)
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform public.admin_set_tenant_limits('varki', null, null, null); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T58 FALHOU: compliance (sem admin) alterou limites'; end if;
+  begin perform 1 from public.admin_tenants_overview(); exception when others then raise exception 'T58 FALHOU: compliance nao consegue ver o painel de agencias'; end;
+  raise notice 'T58 OK: so admin altera limites; compliance so consulta';
+end $$;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve (cliente)
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform * from public.tenant_limits; exception when insufficient_privilege then _blocked := true; end;
+  if not _blocked then raise exception 'T58 FALHOU: cliente leu tenant_limits'; end if;
+  _blocked := false;
+  begin perform * from public.tenant_agency_status(); exception when insufficient_privilege then _blocked := true; end;
+  if not _blocked then raise exception 'T58 FALHOU: cliente leu o status da agencia'; end if;
+  raise notice 'T58 OK: limites e status da agencia invisiveis a cliente';
+end $$;
+
+-- --- T59: exposição total e antecipação diária; limites de uma agência não afetam outra
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020'; -- Ada
+-- exposição: 480000 já antecipados (T54). Teto 800000 barra +400000 e 900000 deixa passar.
+select public.admin_set_tenant_limits('varki', null, 800000, null);
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve
+do $$
+declare _rec uuid; _msg text;
+begin
+  select id into _rec from public.receivables where gross_cents = 410000;
+  begin perform public.advance_receivable(_rec); exception when others then _msg := sqlerrm; end;
+  if _msg is null or _msg not like 'Limite da agência: exposição%' then
+    raise exception 'T59 FALHOU: exposicao total nao barrou (%)', _msg;
+  end if;
+  raise notice 'T59 OK: teto de exposicao total antecipada';
+end $$;
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020'; -- Ada
+select public.admin_set_tenant_limits('varki', null, null, 500000);  -- diário: já saíram 480000 hoje
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve
+do $$
+declare _rec uuid; _msg text;
+begin
+  select id into _rec from public.receivables where gross_cents = 410000;
+  begin perform public.advance_receivable(_rec); exception when others then _msg := sqlerrm; end;
+  if _msg is null or _msg not like 'Limite da agência: antecipação diária%' then
+    raise exception 'T59 FALHOU: limite diario nao barrou (%)', _msg;
+  end if;
+  raise notice 'T59 OK: teto de antecipacao por dia';
+end $$;
+
+-- LivrePay (outra agência) segue sem limite, mesmo com a VARKI limitada
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol
+select public.verify_receivable((select id from public.admin_receivables_list() where gross_cents = 900000));
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000011'; -- Hank (LivrePay)
+do $$
+declare _rec uuid; _before bigint; _after bigint;
+begin
+  select id into _rec from public.receivables where gross_cents = 900000;
+  select balance_cents into _before from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-000000000011';
+  perform public.advance_receivable(_rec);
+  select balance_cents into _after from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-000000000011';
+  if _after <> _before + 880000 then raise exception 'T59 FALHOU: limites da VARKI afetaram o LivrePay'; end if;
+  raise notice 'T59 OK: limite de uma agencia nao afeta outra';
+end $$;
+
+-- sem limite (NULL) volta ao comportamento anterior
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020'; -- Ada
+select public.admin_set_tenant_limits('varki', null, null, null);
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve
+do $$
+declare _rec uuid; _before bigint; _after bigint;
+begin
+  select id into _rec from public.receivables where gross_cents = 410000;
+  select balance_cents into _before from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  perform public.advance_receivable(_rec);
+  select balance_cents into _after from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  if _after <> _before + 400000 then raise exception 'T59 FALHOU: sem limite deveria antecipar normalmente'; end if;
+  raise notice 'T59 OK: sem limite (NULL) antecipa normalmente';
+end $$;
+
+-- --- T60: suspensão bloqueia dinheiro, equipe, sessões; reativação restaura ---
+reset role;
+insert into auth.refresh_tokens (user_id, token_hash, expires_at) values
+  ('aaaaaaaa-0000-0000-0000-00000000000e', 'hash-eve', now() + interval '1 day'),
+  ('aaaaaaaa-0000-0000-0000-000000000011', 'hash-hank', now() + interval '1 day');
+
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve cria um pagamento (rascunho)
+insert into public.payments (user_id, kind, amount_cents, recipient_name)
+values ('aaaaaaaa-0000-0000-0000-00000000000e', 'transferencia', 1000, 'Teste suspensao');
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform public.admin_set_tenant_status('varki', 'suspended', 'teste'); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T60 FALHOU: staff do tenant suspendeu a propria agencia'; end if;
+  raise notice 'T60 OK: staff de tenant nao suspende agencia';
+end $$;
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020'; -- Ada
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform public.admin_set_tenant_status('livrepay', 'suspended', 'tentativa'); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T60 FALHOU: suspendeu a plataforma'; end if;
+  _blocked := false;
+  begin perform public.admin_set_tenant_status('varki', 'suspended', '  '); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T60 FALHOU: suspendeu sem motivo'; end if;
+  raise notice 'T60 OK: plataforma nao e suspensa e suspensao exige motivo';
+end $$;
+
+select public.admin_set_tenant_status('varki', 'suspended', 'Investigacao de fraude');
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve (agência suspensa)
+do $$
+declare _pay uuid; _rec uuid; _b1 boolean := false; _b2 boolean := false; _msg text;
+begin
+  select id into _pay from public.payments where recipient_name = 'Teste suspensao';
+  begin perform public.execute_payment(_pay); exception when others then _b1 := true; _msg := sqlerrm; end;
+  if not _b1 then raise exception 'T60 FALHOU: agencia suspensa executou pagamento'; end if;
+  if _msg not like 'Agência suspensa%' then raise exception 'T60 FALHOU: pagamento barrado pelo motivo errado: %', _msg; end if;
+
+  select id into _rec from public.receivables where gross_cents = 800000;
+  begin perform public.advance_receivable(_rec); exception when others then _b2 := true; end;
+  if not _b2 then raise exception 'T60 FALHOU: agencia suspensa antecipou'; end if;
+  raise notice 'T60 OK: agencia suspensa nao paga nem antecipa';
+end $$;
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank (staff da agência suspensa)
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform * from public.tenant_list_customers(); exception when insufficient_privilege then _blocked := true; end;
+  if not _blocked then raise exception 'T60 FALHOU: equipe de agencia suspensa continua operando'; end if;
+  raise notice 'T60 OK: equipe de agencia suspensa e barrada';
+end $$;
+
+reset role;
+do $$
+declare _eve int; _hank int; _t record;
+begin
+  select count(*) into _eve from auth.refresh_tokens where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e' and revoked_at is null;
+  select count(*) into _hank from auth.refresh_tokens where user_id = 'aaaaaaaa-0000-0000-0000-000000000011' and revoked_at is null;
+  if _eve <> 0 then raise exception 'T60 FALHOU: sessoes da agencia suspensa nao foram derrubadas'; end if;
+  if _hank <> 1 then raise exception 'T60 FALHOU: suspensao derrubou sessoes de OUTRA agencia'; end if;
+  select * into _t from public.tenants where slug = 'varki';
+  if _t.status <> 'suspended' or _t.suspended_at is null or _t.suspended_reason <> 'Investigacao de fraude' then
+    raise exception 'T60 FALHOU: estado de suspensao incompleto';
+  end if;
+  raise notice 'T60 OK: suspensao derruba sessoes so da agencia e registra motivo';
+end $$;
+
+-- outra agência não é afetada: Hank (LivrePay) paga normalmente
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000011'; -- Hank
+do $$
+declare _pay uuid; _row public.payments%rowtype;
+begin
+  insert into public.payments (user_id, kind, amount_cents, recipient_name)
+  values ('aaaaaaaa-0000-0000-0000-000000000011', 'transferencia', 1000, 'Hank ok') returning id into _pay;
+  select * into _row from public.execute_payment(_pay);
+  if _row.status <> 'processing' then raise exception 'T60 FALHOU: LivrePay nao deveria ser afetado pela suspensao da VARKI'; end if;
+  raise notice 'T60 OK: suspender uma agencia nao afeta outra';
+end $$;
+
+-- reativação
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020'; -- Ada
+select public.admin_set_tenant_status('varki', 'active', null);
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve
+do $$
+declare _pay uuid; _row public.payments%rowtype;
+begin
+  select id into _pay from public.payments where recipient_name = 'Teste suspensao';
+  select * into _row from public.execute_payment(_pay);
+  if _row.status <> 'processing' then raise exception 'T60 FALHOU: pagamento nao voltou a funcionar apos reativar'; end if;
+  raise notice 'T60 OK: reativacao restaura as operacoes';
+end $$;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank
+select count(*) from public.tenant_list_customers();
+
+-- --- T61: conciliação por agência fecha com o ledger -------------------------
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020'; -- Ada
+do $$
+declare _sum_tenants bigint; _total bigint; _v record; _daily_credits bigint; _daily_debits bigint; _direct_exposure bigint;
+begin
+  select coalesce(sum(balance_cents), 0) into _sum_tenants from public.admin_tenants_overview();
+  reset role;
+  select coalesce(sum(balance_cents), 0) into _total from public.accounts;
+  set role authenticated;
+  set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020';
+  if _sum_tenants <> _total then
+    raise exception 'T61 FALHOU: saldos por agencia (%) nao fecham com o total das contas (%)', _sum_tenants, _total;
+  end if;
+
+  select * into _v from public.admin_tenants_overview() where slug = 'varki';
+  select sum(credits_cents), sum(debits_cents) into _daily_credits, _daily_debits from public.admin_tenant_daily_movement('varki');
+  if _daily_credits <> _v.credits_30d_cents or _daily_debits <> _v.debits_30d_cents then
+    raise exception 'T61 FALHOU: movimento diario nao fecha com o consolidado (% / %)', _daily_credits, _v.credits_30d_cents;
+  end if;
+
+  reset role;
+  select coalesce(sum(r.net_cents), 0) into _direct_exposure
+    from public.receivables r join public.profiles p on p.id = r.user_id
+   where p.tenant_id = '00000000-0000-4000-8000-000000000002' and r.status = 'advanced';
+  set role authenticated;
+  set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000020';
+  if _v.advanced_exposure_cents <> _direct_exposure then
+    raise exception 'T61 FALHOU: exposicao diverge (% vs %)', _v.advanced_exposure_cents, _direct_exposure;
+  end if;
+  raise notice 'T61 OK: conciliacao por agencia fecha com contas, ledger e recebiveis';
+end $$;
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000010'; -- Gina (support VARKI)
+do $$
+declare _s record; _admin record; _d bigint;
+begin
+  select * into _s from public.tenant_agency_status();
+  if _s.customers <> 3 then raise exception 'T61 FALHOU: a agencia VARKI tem 3 clientes, veio %', _s.customers; end if;
+  select coalesce(sum(credits_cents), 0) into _d from public.tenant_daily_movement();
+  if _d <> _s.credits_30d_cents then raise exception 'T61 FALHOU: movimento da equipe nao fecha'; end if;
+  raise notice 'T61 OK: equipe ve saldo e movimento so da propria agencia';
+end $$;
+
+-- --- T62: limites e suspensão ficam na trilha de auditoria --------------------
+reset role;
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.audit_log
+   where table_name = 'tenant_limits' and action = 'UPDATE' and user_id = 'aaaaaaaa-0000-0000-0000-000000000020';
+  if _n < 3 then raise exception 'T62 FALHOU: alteracao de limites sem trilha (%)', _n; end if;
+  select count(*) into _n from public.audit_log
+   where table_name = 'tenants' and action = 'UPDATE' and user_id = 'aaaaaaaa-0000-0000-0000-000000000020'
+     and new_data ->> 'status' = 'suspended';
+  if _n < 1 then raise exception 'T62 FALHOU: suspensao sem trilha'; end if;
+  raise notice 'T62 OK: limites e suspensao auditados (quem, quando, antes/depois)';
+end $$;
+
 -- --- Resumo ---------------------------------------------------------------
 reset role;
 do $$

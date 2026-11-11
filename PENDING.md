@@ -990,9 +990,20 @@ e2e local de 29 verificações; regras em SECURITY.md → "Multi-tenant"):
 (só depois dos bloqueantes abaixo); reCAPTCHA do app da VARKI (domínio no Google) para o login funcionar.
 Se o app da VARKI ganhar domínio próprio: acrescentar em `TENANT_VARKI_ORIGINS` (separado por vírgula).
 
+**Controles de agência — implementados e testados, AINDA NÃO em produção** (migration
+`20261111120000_agency_controls.sql`, T57–T62, `test:tenant-suspension`, e2e de 64 verificações):
+limites por agência (por recebível, exposição total, por dia; `NULL` = sem limite), suspensão/reativação
+(bloqueia pagar, antecipar, equipe, login e cadastro; derruba sessões), conciliação por agência (saldo,
+movimento, exposição) e auditoria. **Decisão (2026-11-11): VARKI sem limite por enquanto.**
+Tela **Administração → Agências** no LivrePay (+ resumo na Visão Geral e a agência/pré-aprovação em
+Verificação de Recebíveis); aba "Saldo e movimento" no painel "Agência" da VARKI. Corrigida a contagem
+"Recebíveis pendentes de verificação" da Visão Geral (dava sempre 0).
+**Deploy (humano):** 1) aplicar `20261111120000_agency_controls.sql` (redefine `advance_receivable` e
+`execute_payment`); 2) publicar a API; 3) publicar o LivrePay front e o `varki-app`.
+
 **Bloqueantes antes da operação real da VARKI** (revisão de compliance, 2026-11-11):
-1. Limite de valor / teto de exposição por tenant dentro de `advance_receivable` e dupla aprovação
-   acima de um corte (hoje a plataforma verifica, mas sem limite).
+1. Dupla aprovação acima de um corte de valor e **definir os limites** da VARKI (o mecanismo já existe;
+   a plataforma já verifica antes de liberar crédito).
 2. MFA para `tenant_staff` e registro formal de quem recebe o papel.
 3. Contrato + DPA com a VARKI (papéis LGPD, responsabilidade por fraude/inadimplência, acesso da
    plataforma aos dados).

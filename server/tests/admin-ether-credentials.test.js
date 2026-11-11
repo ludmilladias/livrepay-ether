@@ -62,6 +62,8 @@ pool.connect = async () => {
       const q = String(sql).replace(/\s+/g, " ").trim();
       if (q.startsWith("SELECT set_config")) { claim = params[0]; return { rows: [] }; }
       if (/^(BEGIN|COMMIT|ROLLBACK|SET LOCAL)/i.test(q)) return { rows: [] };
+      // requireAuth consulta o status da agência (tenant) do usuário.
+      if (q.includes("join public.tenants t on t.id = p.tenant_id")) return { rows: [{ status: "active" }] };
       if (q.includes("join public.accounts a")) return { rows: [{ balance_cents: "0" }] };
       if (q.includes("as is_admin")) {
         const p = profiles[params[0]];

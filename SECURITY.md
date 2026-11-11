@@ -249,12 +249,17 @@ select u.id, t.id, 'admin' from auth.users u, public.tenants t
  where u.email = 'pessoa@varki.com.br' and t.slug = 'varki';
 ```
 
-**Ordem de deploy:** aplicar a migration **antes** de publicar o código da API (o login passa a
-consultar `public.tenants`). Admin/compliance **globais** continuam vendo todos os tenants e são
+**Ordem de deploy:** aplicar cada migration **antes** de publicar o código da API que depende dela
+(`tenants`: o login consulta `public.tenants`; `agency_controls`: o `requireAuth` consulta
+`tenants.status` e redefine `advance_receivable`/`execute_payment`; código sem a coluna = erro em toda
+requisição autenticada). Admin/compliance **globais** continuam vendo todos os tenants e são
 quem **libera o crédito** (`verify_receivable`); o painel da plataforma mostra a pré-aprovação e o tenant.
 
-**Antes de abrir para a operação real da VARKI** (revisão de compliance 2026-11-11, ver PENDING.md):
-MFA para `tenant_staff`, limites de valor/exposição por tenant dentro de `advance_receivable`,
+**Deploy da migration de controles (humano):** aplicar `20261111120000_agency_controls.sql` **antes**
+de publicar a API (o `requireAuth` passa a consultar `tenants.status`; código sem a coluna = erro em
+toda requisição autenticada). Ela redefine `advance_receivable` e `execute_payment`.
+MFA para `tenant_staff`, dupla aprovação acima de um corte de valor (os **limites por agência** já existem;
+a VARKI está **sem limite** por decisão da Ludmilla em 2026-11-11 — defina antes de operar de verdade),
 contrato + DPA com a VARKI e confirmação escrita da Ether sobre o modelo multi-marca.
 
 ## Testes

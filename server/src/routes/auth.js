@@ -95,6 +95,10 @@ authRouter.post(
     // O app de origem define o tenant do cliente; o trigger de cadastro grava e
     // depois ele não muda mais (profiles.tenant_id é imutável para a aplicação).
     const tenantSlug = tenantFromOrigin(req.headers.origin);
+    const { rows: tenantStatus } = await authQuery(`select status from public.tenants where slug = $1`, [tenantSlug]);
+    if (tenantStatus[0]?.status === "suspended") {
+      throw new ApiError(403, "Cadastros indisponíveis no momento. Fale com o atendimento.", "TENANT_SUSPENDED");
+    }
 
     let user;
     try {
@@ -171,11 +175,15 @@ authRouter.post(
     // revela que a conta existe em outro tenant) e depois da senha, para não
     // alterar o tempo nem zerar/contar tentativas.
     const { rows: tenantRows } = await authQuery(
-      `select t.slug from public.profiles p join public.tenants t on t.id = p.tenant_id where p.id = $1`,
+      `select t.slug, t.status from public.profiles p join public.tenants t on t.id = p.tenant_id where p.id = $1`,
       [user.id],
     );
     if ((tenantRows[0]?.slug ?? DEFAULT_TENANT) !== tenantFromOrigin(req.headers.origin)) {
       throw invalid;
+    }
+    // Agência suspensa: depois da senha correta (não revela contas a quem não a sabe).
+    if (tenantRows[0]?.status === "suspended") {
+      throw new ApiError(403, "Acesso suspenso. Fale com o atendimento.", "TENANT_SUSPENDED");
     }
 
     await authQuery(

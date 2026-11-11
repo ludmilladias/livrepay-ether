@@ -15,6 +15,14 @@ const { createDocumentUploadRouter, sniffMime } = await import("../src/routes/on
 const { errorHandler } = await import("../src/middleware.js");
 const { signAccessToken } = await import("../src/tokens.js");
 const ether = await import("../src/ether.js");
+const { pool } = await import("../src/db.js");
+
+// requireAuth consulta o status da agência (tenant) do usuário: banco falso, sempre ativa.
+pool.connect = async () => ({
+  query: async (sql) =>
+    String(sql).includes("join public.tenants t on t.id = p.tenant_id") ? { rows: [{ status: "active" }] } : { rows: [] },
+  release: () => {},
+});
 
 let FAIL = 0;
 

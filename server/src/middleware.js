@@ -1,5 +1,5 @@
 import { verifyAccessToken } from "./tokens.js";
-import { withUser } from "./db.js";
+import { authQuery, withUser } from "./db.js";
 import { errorLogFields } from "./safeLog.js";
 
 /** Erro de negócio com status HTTP — o handler global sabe traduzir. */
@@ -11,22 +11,55 @@ export class ApiError extends Error {
   }
 }
 
-/** Exige um access token válido; anexa req.userId. */
+// A agência (tenant) do usuário está suspensa? Cache curto por usuário: a suspensão passa
+// a valer em segundos sem uma consulta por requisição. Erro do banco = falha FECHADA (500).
+const SUSPENSION_TTL_MS = 15_000;
+const SUSPENSION_CACHE_MAX = 5_000;
+const suspensionCache = new Map(); // userId -> { suspended, until }
+
+export async function isTenantSuspended(userId, now = Date.now()) {
+  const hit = suspensionCache.get(userId);
+  if (hit && hit.until > now) return hit.suspended;
+
+  const { rows } = await authQuery(
+    `select t.status from public.profiles p join public.tenants t on t.id = p.tenant_id where p.id = $1`,
+    [userId],
+  );
+  const suspended = rows[0]?.status === "suspended";
+
+  if (suspensionCache.size >= SUSPENSION_CACHE_MAX) suspensionCache.clear();
+  suspensionCache.set(userId, { suspended, until: now + SUSPENSION_TTL_MS });
+  return suspended;
+}
+
+export const clearSuspensionCache = () => suspensionCache.clear();
+
+/** Exige um access token válido e agência ativa; anexa req.userId. */
 export function requireAuth(req, _res, next) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
     return next(new ApiError(401, "Não autenticado"));
   }
 
+  let userId;
   try {
     const payload = verifyAccessToken(header.slice(7));
     if (!payload.sub) throw new Error("token sem sub");
-    req.userId = payload.sub;
-    next();
+    userId = payload.sub;
   } catch {
     // Mensagem genérica de propósito: não revelamos se expirou ou é inválido.
-    next(new ApiError(401, "Sessão inválida ou expirada"));
+    return next(new ApiError(401, "Sessão inválida ou expirada"));
   }
+
+  isTenantSuspended(userId)
+    .then((suspended) => {
+      if (suspended) {
+        return next(new ApiError(403, "Acesso suspenso. Fale com o atendimento.", "TENANT_SUSPENDED"));
+      }
+      req.userId = userId;
+      return next();
+    })
+    .catch(next);
 }
 
 /**
@@ -121,6 +154,7 @@ export function asyncRoute(handler) {
  * podem ser mostradas; o resto vira 500 genérico.
  */
 const BUSINESS_MESSAGES = [
+  "Limite da agência",
   "Saldo insuficiente",
   "não está ativa",
   "não encontrada",
@@ -138,7 +172,7 @@ const BUSINESS_MESSAGES = [
 ];
 
 /** Mensagens de negócio que significam "sem permissão", não "dado inválido". */
-const FORBIDDEN_MESSAGES = ["Apenas admin pode"];
+const FORBIDDEN_MESSAGES = ["Apenas admin pode", "Agência suspensa"];
 
 /**
  * Caminho seguro para log. Em /webhooks/<provedor>/<token> o segmento final é o

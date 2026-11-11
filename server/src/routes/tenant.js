@@ -57,6 +57,19 @@ tenantRouter.get(
 listRoute("/customers", "tenant_list_customers");
 listRoute("/receivables", "tenant_receivables_list");
 listRoute("/payments", "tenant_payments_list");
+listRoute("/movement", "tenant_daily_movement");
+
+// Saldo, movimento de 30 dias e uso dos limites da PRÓPRIA agência.
+tenantRouter.get(
+  "/agency",
+  asyncRoute(async (req, res) => {
+    const row = await withUser(req.userId, async (client) => {
+      const result = await client.query(`select * from public.tenant_agency_status()`);
+      return result.rows[0];
+    });
+    res.json(row);
+  }),
+);
 
 tenantRouter.post(
   "/receivables/:id/approve",

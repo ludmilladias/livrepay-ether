@@ -96,6 +96,7 @@ const moduleItems = [
 const adminItems = [
   { title: "Visão Geral", url: "/admin" },
   { title: "Verificação de Recebíveis", url: "/admin/recebiveis" },
+  { title: "Agências", url: "/admin/agencias" },
   { title: "Eventos do Provedor", url: "/admin/eventos-provedor" },
   { title: "Auditoria", url: "/admin/auditoria" },
 ]

@@ -72,6 +72,7 @@ import VerificacaoRecebiveis from "./pages/admin/VerificacaoRecebiveis";
 import EventosProvedor from "./pages/admin/EventosProvedor";
 import Auditoria from "./pages/admin/Auditoria";
 import Usuarios from "./pages/admin/Usuarios";
+import Agencias from "./pages/admin/Agencias";
 import CredenciaisEther from "./pages/admin/CredenciaisEther";
 
 const queryClient = new QueryClient();
@@ -186,6 +187,14 @@ const AppShell = () => (
                     element={
                       <RequireRole roles={["admin", "compliance"]}>
                         <Auditoria />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/admin/agencias"
+                    element={
+                      <RequireRole roles={["admin", "compliance"]}>
+                        <Agencias />
                       </RequireRole>
                     }
                   />

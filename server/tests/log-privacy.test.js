@@ -32,6 +32,8 @@ pool.connect = async () => ({
   query: async (sql) => {
     const q = String(sql);
     if (/^(BEGIN|COMMIT|ROLLBACK|SET LOCAL)/i.test(q) || q.includes("set_config")) return { rows: [] };
+    // requireAuth consulta o status da agência (tenant) do usuário.
+    if (q.includes("join public.tenants t on t.id = p.tenant_id")) return { rows: [{ status: "active" }] };
     if (q.includes("select ether_user_id, ether_account_status from public.profiles")) {
       return { rows: [{ ether_user_id: null, ether_account_status: "pending" }] };
     }

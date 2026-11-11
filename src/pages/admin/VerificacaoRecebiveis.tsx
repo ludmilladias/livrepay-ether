@@ -100,6 +100,7 @@ const VerificacaoRecebiveis = () => {
               <TableHeader>
                 <TableRow>
                   <TableHead>Usuário</TableHead>
+                  <TableHead>Agência</TableHead>
                   <TableHead>Contrato</TableHead>
                   <TableHead>Vencimento</TableHead>
                   <TableHead>Bruto</TableHead>
@@ -112,6 +113,7 @@ const VerificacaoRecebiveis = () => {
                 {pending.map((r) => (
                   <TableRow key={r.id}>
                     <TableCell className="font-medium">{r.owner_name ?? r.user_id}</TableCell>
+                    <TableCell className="capitalize">{r.tenant_slug ?? "—"}</TableCell>
                     <TableCell>
                       {r.contract_name ?? "—"}
                       {r.contract_acquirer ? ` · ${r.contract_acquirer}` : ""}
@@ -121,10 +123,17 @@ const VerificacaoRecebiveis = () => {
                     <TableCell className="font-semibold text-success">
                       {formatCents(r.net_cents)}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="space-y-1">
                       <Badge className={receivableStatusClass[r.status]} variant="secondary">
                         {receivableStatusLabel[r.status]}
                       </Badge>
+                      {r.tenant_reviewed_at && (
+                        <div>
+                          <Badge variant="outline" className="border-amber-300 text-amber-800">
+                            Pré-aprovado pela agência
+                          </Badge>
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="text-right space-x-2">
                       <Button

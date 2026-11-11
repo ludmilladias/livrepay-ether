@@ -70,6 +70,8 @@ pool.connect = async () => {
       if (q.startsWith("SELECT set_config")) { claim = params[0]; return { rows: [] }; }
       if (/^(COMMIT|ROLLBACK)/i.test(q)) { releaseLock?.(); releaseLock = null; return { rows: [] }; }
       if (/^(BEGIN|SET LOCAL)/i.test(q)) return { rows: [] };
+      // requireAuth consulta o status da agência (tenant) do usuário.
+      if (q.includes("join public.tenants t on t.id = p.tenant_id")) return { rows: [{ status: "active" }] };
       if (q.includes("pg_advisory_xact_lock")) {
         while (locks.has(params[0])) await locks.get(params[0]);
         let release;
