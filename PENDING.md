@@ -972,6 +972,37 @@ nessa conta pessoal (sem saldo). Tarifas de venda e saque: perguntar à Ether.
 **Fora do escopo do primeiro lançamento (telas de demonstração, sinalizadas com PreviewBanner):**
 Cartões, Seguros, Cripto, Paraguai (câmbio BRL↔USD, com consulta cambial/legal pendente).
 
+### 2026-11-11 — multi-tenant (VARKI como tenant) e app próprio da VARKI
+
+**Feito** (migration `20261111000000_tenants.sql`, testes `T44`–`T56`, `server/tests/tenants.test.js`,
+e2e local de 29 verificações; regras em SECURITY.md → "Multi-tenant"):
+- Tenants `livrepay` e `varki`; `profiles.tenant_id` imutável; cadastro grava o tenant pela origem do app
+  (`TENANT_VARKI_ORIGINS`); cada app só loga conta do próprio tenant.
+- Equipe do tenant em `tenant_staff` (separada de `user_roles`/`/admin`), painel `/tenant/*` e tela
+  "Operação" no `varki-app`: clientes (documento mascarado), recebíveis, pagamentos.
+- **Controle duplo no crédito:** o tenant só **pré-aprova**; quem libera (`verify_receivable`) é a plataforma.
+- reCAPTCHA com 2 secrets (`RECAPTCHA_SECRET` + `RECAPTCHA_SECRET_VARKI`).
+
+**Deploy (humano, nesta ordem):** 1) aplicar a migration em produção (precisa do IP em Trusted
+Sources); 2) variável `TENANT_VARKI_ORIGINS` no `walrus-app`; 3) publicar a API; 4) mover a conta
+`contato@varki.com.br` para o tenant `varki` (`update profiles set tenant_id` como doadmin) e
+conceder `tenant_staff` a quem for operar; 5) publicar o front `varki-app`.
+
+**Bloqueantes antes da operação real da VARKI** (revisão de compliance, 2026-11-11):
+1. Limite de valor / teto de exposição por tenant dentro de `advance_receivable` e dupla aprovação
+   acima de um corte (hoje a plataforma verifica, mas sem limite).
+2. MFA para `tenant_staff` e registro formal de quem recebe o papel.
+3. Contrato + DPA com a VARKI (papéis LGPD, responsabilidade por fraude/inadimplência, acesso da
+   plataforma aos dados).
+4. **Confirmação escrita da Ether**: modelo multi-marca sob um tenant, quem responde por KYC/AML,
+   separação de saldo por marca, e se antecipar recebível no ledger interno exige registro/licença.
+5. Revisão humana (jurídico/compliance) e aprovação para go-live.
+
+**Recomendações:** mascarar e-mail/telefone para `support`; motivos de recusa em códigos (o cliente
+vê `rejection_reason`); `tenant_id` em `accounts`/`transactions` e conciliação por tenant da conta da
+casa; alertas de padrão (contas novas, volume); rate limit/captcha no cadastro; e-mails do backend
+ainda saem com a marca LivrePay; canal de atendimento da VARKI em `src/lib/support-contact.ts`.
+
 ---
 
 ## 2. Módulos com dado 100% fictício (maior pendência restante)

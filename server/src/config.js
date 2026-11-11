@@ -18,6 +18,16 @@ function optional(name, fallback) {
 
 const isProduction = process.env.NODE_ENV === "production";
 
+// Origens (apps) de cada tenant além do padrão. O tenant de um app vem DAQUI, nunca
+// de um valor enviado pelo cliente: a origem só é aceita se estiver nesta lista.
+// Origem fora de toda lista cai no tenant 'livrepay'.
+const originList = (name) =>
+  optional(name, "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+const varkiOrigins = originList("TENANT_VARKI_ORIGINS");
+
 // Segredo de JWT curto é força bruta fácil. 32 bytes é o mínimo aceitável.
 const jwtSecret = required("JWT_SECRET");
 if (jwtSecret.length < 32) {
@@ -61,8 +71,16 @@ export const config = {
         .map((o) => o.trim())
         .filter(Boolean),
       ...(isProduction ? ["https://livrepay.digital", "https://www.livrepay.digital"] : []),
+      // Os apps de cada tenant sempre podem chamar a API (CORS).
+      ...varkiOrigins,
     ]),
   ),
+
+  // Tenants cujo app tem origem própria. O que não casar com nenhum cai em 'livrepay'
+  // (ver src/tenants.js). `appUrl` é a base dos links de e-mail daquele tenant.
+  tenants: {
+    varki: { origins: varkiOrigins, appUrl: varkiOrigins[0] ?? "" },
+  },
 
   auth: {
     bcryptRounds: Number(optional("BCRYPT_ROUNDS", "12")),

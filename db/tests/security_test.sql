@@ -1369,6 +1369,408 @@ begin
   raise notice 'T43 OK: modulos so por admin, isolados por conta, revogaveis com historico';
 end $$;
 
+-- ===========================================================================
+-- MULTI-TENANT (20261111000000_tenants.sql): VARKI opera só os clientes dela
+-- ===========================================================================
+reset role;
+insert into auth.users (id, email, password_hash, raw_user_meta_data) values
+  ('aaaaaaaa-0000-0000-0000-00000000000e', 'eve@varki.test',   'x', '{"full_name":"Eve","tenant_slug":"varki"}'),
+  ('aaaaaaaa-0000-0000-0000-00000000000f', 'frank@varki.test', 'x', '{"full_name":"Frank","tenant_slug":"varki"}'),
+  ('aaaaaaaa-0000-0000-0000-000000000010', 'gina@varki.test',  'x', '{"full_name":"Gina","tenant_slug":"varki"}'),
+  ('aaaaaaaa-0000-0000-0000-000000000011', 'hank@lp.test',     'x', '{"full_name":"Hank"}'),
+  ('aaaaaaaa-0000-0000-0000-000000000012', 'ivy@lp.test',      'x', '{"full_name":"Ivy","tenant_slug":"inexistente"}');
+update public.profiles set tax_id = '12345678901'
+ where id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+
+-- Frank: admin da VARKI. Gina: suporte da VARKI. (concessão manual, como em produção)
+insert into public.tenant_staff (user_id, tenant_id, role) values
+  ('aaaaaaaa-0000-0000-0000-00000000000f', '00000000-0000-4000-8000-000000000002', 'admin'),
+  ('aaaaaaaa-0000-0000-0000-000000000010', '00000000-0000-4000-8000-000000000002', 'support');
+
+-- Recebíveis: Eve (VARKI), Frank (VARKI, o próprio staff), Hank (LivrePay).
+do $$
+declare _c uuid;
+begin
+  insert into public.receivable_contracts (user_id, name, acquirer)
+  values ('aaaaaaaa-0000-0000-0000-00000000000e', 'Contrato Eve', 'Adq') returning id into _c;
+  insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+  values ('aaaaaaaa-0000-0000-0000-00000000000e', _c, 500000, 480000, current_date + 5),
+         ('aaaaaaaa-0000-0000-0000-00000000000e', _c, 300000, 290000, current_date + 6);
+
+  insert into public.receivable_contracts (user_id, name, acquirer)
+  values ('aaaaaaaa-0000-0000-0000-00000000000f', 'Contrato Frank', 'Adq') returning id into _c;
+  insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+  values ('aaaaaaaa-0000-0000-0000-00000000000f', _c, 700000, 680000, current_date + 5);
+
+  insert into public.receivable_contracts (user_id, name, acquirer)
+  values ('aaaaaaaa-0000-0000-0000-000000000011', 'Contrato Hank', 'Adq') returning id into _c;
+  insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+  values ('aaaaaaaa-0000-0000-0000-000000000011', _c, 900000, 880000, current_date + 5);
+
+  insert into public.payments (user_id, kind, amount_cents, recipient_name, status, executed_at)
+  values ('aaaaaaaa-0000-0000-0000-00000000000e', 'transferencia', 10000, 'Dest Eve', 'completed', now()),
+         ('aaaaaaaa-0000-0000-0000-000000000011', 'transferencia', 99999, 'Dest Hank', 'completed', now());
+end $$;
+
+-- --- T44: tenant vem do cadastro; ausente/desconhecido cai no padrão -------
+do $$
+declare _slug text;
+begin
+  select t.slug into _slug from public.profiles p join public.tenants t on t.id = p.tenant_id
+   where p.id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  if _slug is distinct from 'varki' then raise exception 'T44 FALHOU: Eve deveria ser varki, e %', _slug; end if;
+
+  select t.slug into _slug from public.profiles p join public.tenants t on t.id = p.tenant_id
+   where p.id = 'aaaaaaaa-0000-0000-0000-000000000011';
+  if _slug is distinct from 'livrepay' then raise exception 'T44 FALHOU: Hank (sem slug) deveria ser livrepay, e %', _slug; end if;
+
+  select t.slug into _slug from public.profiles p join public.tenants t on t.id = p.tenant_id
+   where p.id = 'aaaaaaaa-0000-0000-0000-000000000012';
+  if _slug is distinct from 'livrepay' then raise exception 'T44 FALHOU: slug desconhecido deveria cair em livrepay, e %', _slug; end if;
+
+  select t.slug into _slug from public.profiles p join public.tenants t on t.id = p.tenant_id
+   where p.id = '11111111-1111-1111-1111-111111111111';
+  if _slug is distinct from 'livrepay' then raise exception 'T44 FALHOU: Alice (anterior ao tenant) deveria ser livrepay, e %', _slug; end if;
+
+  raise notice 'T44 OK: tenant vem do cadastro; ausente/desconhecido cai em livrepay';
+end $$;
+
+-- --- T45: ninguém da aplicação muda o próprio tenant -----------------------
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve
+do $$
+declare _blocked boolean := false;
+begin
+  begin
+    update public.profiles set tenant_id = '00000000-0000-4000-8000-000000000001'
+     where id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  exception when insufficient_privilege then _blocked := true;
+  end;
+  if not _blocked then raise exception 'T45 FALHOU: authenticated trocou o proprio tenant'; end if;
+  raise notice 'T45 OK: usuario nao muda o proprio tenant (authenticated)';
+end $$;
+
+reset role;
+set role service_role;
+do $$
+declare _blocked boolean := false;
+begin
+  begin
+    update public.profiles set tenant_id = '00000000-0000-4000-8000-000000000001'
+     where id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  exception when insufficient_privilege then _blocked := true;
+  end;
+  if not _blocked then raise exception 'T45 FALHOU: service_role trocou o tenant de um usuario'; end if;
+  raise notice 'T45 OK: nem service_role muda tenant (so dono/doadmin, manualmente)';
+end $$;
+
+-- --- T46: equipe de tenant precisa pertencer ao tenant ---------------------
+reset role;
+do $$
+declare _blocked boolean := false;
+begin
+  begin
+    insert into public.tenant_staff (user_id, tenant_id, role)
+    values ('aaaaaaaa-0000-0000-0000-000000000011', '00000000-0000-4000-8000-000000000002', 'admin'); -- Hank é livrepay
+  exception when check_violation then _blocked := true;
+  end;
+  if not _blocked then raise exception 'T46 FALHOU: deu papel de VARKI a um cliente do LivrePay'; end if;
+  raise notice 'T46 OK: tenant_staff exige que o usuario seja do proprio tenant';
+end $$;
+
+-- --- T47: staff da VARKI lista só clientes da VARKI, documento mascarado ---
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank (admin VARKI)
+do $$
+declare _n int; _eve record; _leak int;
+begin
+  select count(*) into _n from public.tenant_list_customers();
+  if _n <> 3 then raise exception 'T47 FALHOU: VARKI tem 3 usuarios (Eve, Frank, Gina), a lista trouxe %', _n; end if;
+
+  select count(*) into _leak from public.tenant_list_customers()
+   where email not like '%@varki.test';
+  if _leak <> 0 then raise exception 'T47 FALHOU: % cliente(s) de outro tenant na lista da VARKI', _leak; end if;
+
+  select * into _eve from public.tenant_list_customers() where email = 'eve@varki.test';
+  if _eve.tax_id_masked is distinct from '*******8901' then
+    raise exception 'T47 FALHOU: documento deveria vir mascarado, veio %', _eve.tax_id_masked;
+  end if;
+
+  raise notice 'T47 OK: staff da VARKI lista so clientes da VARKI, documento mascarado';
+end $$;
+
+-- --- T48: quem não é staff do tenant não opera; staff global não vira tenant
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve (cliente)
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform * from public.tenant_list_customers();
+  exception when insufficient_privilege then _blocked := true; end;
+  if not _blocked then raise exception 'T48 FALHOU: cliente comum listou clientes do tenant'; end if;
+  raise notice 'T48 OK: cliente comum nao opera o painel do tenant';
+end $$;
+
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance GLOBAL)
+do $$
+declare _blocked boolean := false;
+begin
+  begin perform * from public.tenant_overview();
+  exception when insufficient_privilege then _blocked := true; end;
+  if not _blocked then raise exception 'T48 FALHOU: compliance global acessou o painel de tenant sem ser staff dele'; end if;
+  raise notice 'T48 OK: papel global nao substitui tenant_staff';
+end $$;
+
+-- --- T49: staff de tenant NAO e admin global --------------------------------
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank
+do $$
+declare _blocked boolean := false; _n int;
+begin
+  if public.has_role('aaaaaaaa-0000-0000-0000-00000000000f', 'admin')
+     or public.has_role('aaaaaaaa-0000-0000-0000-00000000000f', 'compliance') then
+    raise exception 'T49 FALHOU: staff de tenant virou admin/compliance global';
+  end if;
+
+  begin perform * from public.admin_list_users();
+  exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T49 FALHOU: staff de tenant chamou admin_list_users()'; end if;
+
+  _blocked := false;
+  begin perform * from public.admin_receivables_list();
+  exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T49 FALHOU: staff de tenant chamou admin_receivables_list()'; end if;
+
+  _blocked := false;
+  begin insert into public.user_roles (user_id, role) values ('aaaaaaaa-0000-0000-0000-00000000000f', 'admin');
+  exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T49 FALHOU: staff de tenant se promoveu a admin global'; end if;
+
+  select count(*) into _n from public.profiles;
+  if _n <> 1 then raise exception 'T49 FALHOU: leitura direta de profiles vazou (% linhas)', _n; end if;
+
+  raise notice 'T49 OK: staff de tenant nao e admin global e nao le dados alheios direto';
+end $$;
+
+-- --- T50: pré-aprovar/recusar só no próprio tenant, nunca o próprio recebível, uma vez
+do $$
+declare _eve_rec uuid; _hank_rec uuid; _own_rec uuid; _row public.receivables%rowtype; _blocked boolean; _n int; _msg text;
+begin
+  select id into _eve_rec from public.tenant_receivables_list() where gross_cents = 500000;
+  if _eve_rec is null then raise exception 'T50 FALHOU: Frank nao ve o recebivel da Eve'; end if;
+
+  if exists (select 1 from public.tenant_receivables_list() where gross_cents in (900000, 700000)) then
+    raise exception 'T50 FALHOU: lista da VARKI traz recebivel de outro tenant ou o proprio do staff';
+  end if;
+
+  -- pré-aprovação: registra a análise, mas NÃO verifica (não libera crédito)
+  select * into _row from public.tenant_approve_receivable(_eve_rec);
+  if _row.tenant_reviewed_at is null or _row.tenant_reviewed_by <> 'aaaaaaaa-0000-0000-0000-00000000000f' then
+    raise exception 'T50 FALHOU: pre-aprovacao nao registrada';
+  end if;
+  if _row.verified_at is not null or _row.verified_by is not null then
+    raise exception 'T50 FALHOU: pre-aprovacao do tenant NAO pode verificar o recebivel';
+  end if;
+
+  -- idempotente: nao sobrescreve o aprovador original
+  _blocked := false;
+  begin perform public.tenant_approve_receivable(_eve_rec); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T50 FALHOU: segunda aprovacao sobrescreveu a primeira'; end if;
+
+  select * into _row from public.tenant_reject_receivable(
+    (select id from public.tenant_receivables_list() where gross_cents = 300000), 'Documentacao divergente');
+  if _row.status <> 'cancelled' or _row.rejected_by is null then
+    raise exception 'T50 FALHOU: recusa nao registrada';
+  end if;
+
+  -- recebível de OUTRO tenant: tratado como inexistente
+  reset role;
+  select id into _hank_rec from public.receivables where gross_cents = 900000;
+  select id into _own_rec  from public.receivables where gross_cents = 700000;
+  set role authenticated;
+  set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f';
+
+  _blocked := false;
+  begin perform public.tenant_approve_receivable(_hank_rec); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T50 FALHOU: Frank aprovou recebivel do LivrePay'; end if;
+
+  _blocked := false;
+  begin perform public.tenant_reject_receivable(_hank_rec, 'x tentativa'); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T50 FALHOU: Frank recusou recebivel do LivrePay'; end if;
+
+  -- auto-aprovação: pela função...
+  _blocked := false;
+  begin perform public.tenant_approve_receivable(_own_rec); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T50 FALHOU: staff aprovou o proprio recebivel (funcao)'; end if;
+
+  -- ...e por UPDATE direto, tanto verified_* quanto tenant_reviewed_* (dono edita o próprio agendado)
+  _blocked := false;
+  begin
+    update public.receivables set verified_at = now(), verified_by = 'aaaaaaaa-0000-0000-0000-00000000000f' where id = _own_rec;
+  exception when others then _blocked := true; _msg := sqlerrm; end;
+  if not _blocked then raise exception 'T50 FALHOU: staff verificou o proprio recebivel (UPDATE direto)'; end if;
+  if _msg not like '%alterar a verificação%' then raise exception 'T50 FALHOU: UPDATE direto barrado pelo motivo errado: %', _msg; end if;
+
+  _blocked := false;
+  begin
+    update public.receivables set tenant_reviewed_at = now(), tenant_reviewed_by = 'aaaaaaaa-0000-0000-0000-00000000000f' where id = _own_rec;
+  exception when others then _blocked := true; _msg := sqlerrm; end;
+  if not _blocked then raise exception 'T50 FALHOU: staff pre-aprovou o proprio recebivel (UPDATE direto)'; end if;
+  if _msg not like '%alterar a verificação%' then raise exception 'T50 FALHOU: UPDATE direto barrado pelo motivo errado: %', _msg; end if;
+
+  -- staff nao escreve verified_* em recebivel alheio nem por UPDATE direto (RLS: so o dono edita)
+  update public.receivables set verified_at = now(), verified_by = 'aaaaaaaa-0000-0000-0000-00000000000f' where id = _eve_rec;
+  get diagnostics _n = row_count;
+  if _n <> 0 then raise exception 'T50 FALHOU: staff do tenant atualizou recebivel alheio por UPDATE direto'; end if;
+
+  raise notice 'T50 OK: pre-aprovar/recusar so no proprio tenant, uma vez, nunca o proprio recebivel';
+end $$;
+
+-- --- T51: papel support só acompanha; não aprova ------------------------------
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000010'; -- Gina (support VARKI)
+do $$
+declare _blocked boolean := false; _n int;
+begin
+  select count(*) into _n from public.tenant_list_customers();
+  if _n <> 3 then raise exception 'T51 FALHOU: support nao lista os clientes do tenant (%)', _n; end if;
+
+  begin perform * from public.tenant_receivables_list();
+  exception when insufficient_privilege then _blocked := true; end;
+  if not _blocked then raise exception 'T51 FALHOU: support listou recebiveis para aprovacao'; end if;
+
+  _blocked := false;
+  begin perform public.tenant_approve_receivable(gen_random_uuid());
+  exception when insufficient_privilege then _blocked := true; end;
+  if not _blocked then raise exception 'T51 FALHOU: support chamou tenant_approve_receivable'; end if;
+
+  raise notice 'T51 OK: support acompanha, nao aprova';
+end $$;
+
+-- --- T52: pagamentos e visão geral só do tenant; sem dado sensível -----------
+do $$
+declare _o record; _n int; _result text;
+begin
+  select count(*) into _n from public.tenant_payments_list();
+  if _n <> 1 then raise exception 'T52 FALHOU: VARKI tem 1 pagamento, lista trouxe %', _n; end if;
+
+  _result := pg_get_function_result('public.tenant_payments_list()'::regprocedure);
+  if _result ~ 'recipient_key|recipient_tax_id' then
+    raise exception 'T52 FALHOU: lista de pagamentos expoe chave/documento do destinatario';
+  end if;
+
+  select * into _o from public.tenant_overview();
+  if _o.customers <> 3 or _o.payments_30d <> 1 or _o.payments_30d_cents <> 10000 then
+    raise exception 'T52 FALHOU: overview vazou/errou (% clientes, % pagtos, % centavos)',
+      _o.customers, _o.payments_30d, _o.payments_30d_cents;
+  end if;
+
+  raise notice 'T52 OK: pagamentos e visao geral so do tenant, sem dado sensivel do destinatario';
+end $$;
+
+-- --- T53: cada um enxerga só o próprio tenant na tabela tenants --------------
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.tenants;
+  if _n <> 1 then raise exception 'T53 FALHOU: Gina ve % tenants (deveria ver so o dela)', _n; end if;
+  raise notice 'T53 OK: tabela tenants isolada por pertencimento';
+end $$;
+
+-- --- T54: controle duplo — pré-aprovação do tenant NÃO libera crédito -------
+-- Cenário da revisão de segurança: staff do tenant controla uma conta (Eve), pré-aprova o
+-- recebível dela e ela tenta antecipar. Só a verificação da PLATAFORMA libera.
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve (dona)
+do $$
+declare _rec uuid; _before bigint; _after bigint; _blocked boolean := false;
+begin
+  select id into _rec from public.receivables where gross_cents = 500000;
+  select balance_cents into _before from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+
+  begin perform public.advance_receivable(_rec); exception when others then _blocked := true; end;
+  if not _blocked then raise exception 'T54 FALHOU: recebivel so pre-aprovado pelo tenant foi antecipado'; end if;
+
+  select balance_cents into _after from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  if _after <> _before then raise exception 'T54 FALHOU: saldo mudou sem verificacao da plataforma'; end if;
+  raise notice 'T54 OK: pre-aprovacao do tenant nao libera credito';
+end $$;
+
+set request.jwt.claim.sub = '33333333-3333-3333-3333-333333333333'; -- Carol (compliance da plataforma)
+do $$
+declare _rec uuid; _row record;
+begin
+  select * into _row from public.admin_receivables_list() where gross_cents = 500000;
+  if _row.tenant_slug is distinct from 'varki' or _row.tenant_reviewed_at is null then
+    raise exception 'T54 FALHOU: painel da plataforma nao mostra tenant/pre-aprovacao (% / %)', _row.tenant_slug, _row.tenant_reviewed_at;
+  end if;
+  perform public.verify_receivable(_row.id);
+  raise notice 'T54 OK: plataforma ve a pre-aprovacao e verifica';
+end $$;
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve
+do $$
+declare _rec uuid; _before bigint; _after bigint;
+begin
+  select id into _rec from public.receivables where gross_cents = 500000;
+  select balance_cents into _before from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  perform public.advance_receivable(_rec);
+  select balance_cents into _after from public.accounts where user_id = 'aaaaaaaa-0000-0000-0000-00000000000e';
+  if _after <> _before + 480000 then
+    raise exception 'T54 FALHOU: apos verificacao da plataforma o credito deveria ser 480000, foi %', _after - _before;
+  end if;
+  raise notice 'T54 OK: depois da verificacao da plataforma a antecipacao credita normalmente';
+end $$;
+
+-- --- T55: recebível analisado é imutável (valor/prazo/contrato) --------------
+-- Recebível NOVO, pré-aprovado pelo tenant e ainda agendado (o dono ainda poderia editá-lo
+-- pela policy): a trava tem de vir do trigger.
+reset role;
+insert into public.receivables (user_id, contract_id, gross_cents, net_cents, due_date)
+select user_id, contract_id, 410000, 400000, current_date + 9
+  from public.receivables
+ where gross_cents = 500000 and user_id = 'aaaaaaaa-0000-0000-0000-00000000000e' limit 1;
+
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000f'; -- Frank
+select public.tenant_approve_receivable((select id from public.tenant_receivables_list() where gross_cents = 410000));
+
+set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-00000000000e'; -- Eve (dona)
+do $$
+declare _rec uuid; _blocked boolean := false; _gross bigint;
+begin
+  select id into _rec from public.receivables where gross_cents = 410000;
+  begin
+    update public.receivables set gross_cents = 9000000, net_cents = 8900000 where id = _rec;
+  exception when check_violation then _blocked := true; end;
+  if not _blocked then raise exception 'T55 FALHOU: dono alterou o valor de recebivel ja analisado'; end if;
+
+  select gross_cents into _gross from public.receivables where id = _rec;
+  if _gross <> 410000 then raise exception 'T55 FALHOU: valor mudou para %', _gross; end if;
+
+  -- recebivel ainda NAO analisado continua editavel pelo dono (regra anterior preservada)
+  raise notice 'T55 OK: recebivel analisado nao muda valor/prazo/contrato';
+end $$;
+
+-- --- T56: auditoria de recebíveis, concessão de equipe e leitura de PII -------
+reset role;
+do $$
+declare _n int;
+begin
+  select count(*) into _n from public.audit_log where table_name = 'tenant_staff' and action = 'INSERT';
+  if _n < 2 then raise exception 'T56 FALHOU: concessao de tenant_staff sem trilha (%)', _n; end if;
+
+  select count(*) into _n from public.audit_log
+   where table_name = 'receivables' and action = 'UPDATE'
+     and (new_data ->> 'tenant_reviewed_by') = 'aaaaaaaa-0000-0000-0000-00000000000f'
+     and user_id = 'aaaaaaaa-0000-0000-0000-00000000000f';
+  if _n < 1 then raise exception 'T56 FALHOU: pre-aprovacao sem trilha (quem/quando)'; end if;
+
+  select count(*) into _n from public.audit_log
+   where table_name = 'profiles' and action = 'READ' and user_id = 'aaaaaaaa-0000-0000-0000-00000000000f';
+  if _n < 1 then raise exception 'T56 FALHOU: leitura de PII pela equipe sem trilha'; end if;
+
+  raise notice 'T56 OK: auditoria de recebiveis, concessao de equipe e leitura de PII';
+end $$;
+
+reset role;
+
 -- --- Resumo ---------------------------------------------------------------
 reset role;
 do $$

@@ -216,6 +216,47 @@ a própria chamada de estorno falhar; aí o log grava `FALHA CRÍTICA`.
 
 **Configure alerta para o termo `FALHA CRÍTICA` nos logs da API.**
 
+## Multi-tenant (um app por marca, ex.: VARKI)
+
+LivrePay e VARKI compartilham **API e banco**; cada tenant tem o **próprio front** (o da VARKI é
+o repositório `varki-app`). Migration `20261111000000_tenants.sql`, testes `T44`–`T53`.
+
+| Regra | Onde vive |
+|---|---|
+| O tenant do usuário é `profiles.tenant_id`, gravado no cadastro (trigger `handle_new_user`) | banco |
+| `tenant_id` **não muda** por `authenticated`, `anon` nem `service_role`: mover alguém de tenant é manual (dono/doadmin) | trigger `prevent_tenant_change` (T45) |
+| A equipe de um tenant fica em **`tenant_staff`**, não em `user_roles`. `has_role()`, `requireRole()` e `/admin` continuam sendo da **plataforma** | banco + API (T49) |
+| Equipe de tenant só existe para usuário **do próprio tenant** | trigger `tenant_staff_same_tenant` (T46) |
+| O painel `/tenant/*` só chama funções `tenant_*()` (`SECURITY DEFINER`), que exigem `tenant_staff` e filtram por tenant no SQL; recebível de outro tenant é "inexistente" (404) | banco (T47–T52) |
+| **Controle duplo no crédito:** a equipe do tenant só **pré-aprova** (`tenant_reviewed_at`); `verified_at` (que libera `advance_receivable`) continua só de admin/compliance da **plataforma**. Pré-aprovação é única (não sobrescreve o aprovador) | banco (T50, T54) |
+| Ninguém pré-aprova o **próprio** recebível, por função nem por UPDATE direto | função + guard de trigger (T50) |
+| Recebível pré-aprovado/verificado é **imutável** (valor, vencimento, contrato) | trigger `receivables_immutable_after_review` (T55) |
+| Trilha de auditoria: `receivables`, concessão de `tenant_staff` e **leitura de PII** pela equipe (`audit_log`, ação `READ`) | triggers + `tenant_list_customers` (T56) |
+| Equipe vê documento **mascarado** (4 últimos dígitos) e pagamento sem chave PIX/linha digitável/documento do destinatário | funções `tenant_list_customers`/`tenant_payments_list` (T47, T52) |
+| Cada app só loga conta do próprio tenant (401 genérico, sem revelar a conta); o link de reset vai para o app do tenant | API (`auth.js`) |
+
+A API decide o tenant do **cadastro** pelo cabeçalho `Origin` mapeado em `TENANT_VARKI_ORIGINS`
+(`server/src/tenants.js`). `Origin` é falsificável fora do navegador, então ele **nunca** concede
+acesso: só escolhe o tenant na criação da conta e barra o login no app errado. O isolamento de dado
+é do banco. Sem `Origin` ou origem desconhecida = tenant `livrepay`. A origem do app do tenant
+também entra no CORS automaticamente.
+
+Conceder equipe (manual, como o bootstrap de admin — ninguém se promove por código):
+
+```sql
+insert into public.tenant_staff (user_id, tenant_id, role)
+select u.id, t.id, 'admin' from auth.users u, public.tenants t
+ where u.email = 'pessoa@varki.com.br' and t.slug = 'varki';
+```
+
+**Ordem de deploy:** aplicar a migration **antes** de publicar o código da API (o login passa a
+consultar `public.tenants`). Admin/compliance **globais** continuam vendo todos os tenants e são
+quem **libera o crédito** (`verify_receivable`); o painel da plataforma mostra a pré-aprovação e o tenant.
+
+**Antes de abrir para a operação real da VARKI** (revisão de compliance 2026-11-11, ver PENDING.md):
+MFA para `tenant_staff`, limites de valor/exposição por tenant dentro de `advance_receivable`,
+contrato + DPA com a VARKI e confirmação escrita da Ether sobre o modelo multi-marca.
+
 ## Testes
 
 ```bash
@@ -226,6 +267,8 @@ cd server && npm run test:onboarding # schema/payload do cadastro, normalizaçã
 cd server && npm run test:documents  # rota de upload de documento de KYC (banco e Ether falsos)
 cd server && npm run test:privacy    # PII não vai para log nem resposta (onboarding + handler genérico)
 cd server && npm run test:webhook    # HMAC do webhook sobre o corpo cru, janela de timestamp, idempotência
+cd server && npm run test:tenants    # resolução de tenant por origem (sufixo malicioso não herda o tenant)
+cd server && npm run test:captcha    # reCAPTCHA com mais de um secret (LivrePay + VARKI)
 ```
 
 `db:test` sobe um Postgres 16 descartável, aplica todas as migrations e valida: onboarding,
@@ -276,6 +319,10 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 - Nunca escrever direto em `accounts.balance_cents` nem em `transactions`.
 - Regra de negócio crítica (saldo, status, limite) vive em constraint/policy/função do banco,
   não só na API.
+- Tabela de negócio nova precisa responder "de que tenant é?" (via `profiles.tenant_id` do dono).
+  Nunca dar acesso de equipe de tenant com policy ampla por sessão: use função `tenant_*()`
+  `SECURITY DEFINER` que filtra por tenant (mesma lição de `transactions`/`receivables`).
+- Não reaproveite `/admin` nem `user_roles` para equipe de tenant.
 
 ## Incidentes
 

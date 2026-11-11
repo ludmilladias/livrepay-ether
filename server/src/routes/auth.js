@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import { requireCaptcha } from "../captcha.js";
 import { sendPasswordResetEmail, sendPasswordChangedEmail } from "../mailer.js";
 import { toCitySlug } from "../cityslug.js";
+import { appUrlForTenant, DEFAULT_TENANT, tenantFromOrigin } from "../tenants.js";
 import { isValidCpf, isValidCnpj } from "../br-docs.js";
 import { errorLogFields, etherErrorFields, safeEtherCode } from "../safeLog.js";
 import {
@@ -91,14 +92,17 @@ authRouter.post(
   asyncRoute(async (req, res) => {
     const { email, password, fullName } = req.body;
     const passwordHash = await bcrypt.hash(password, config.auth.bcryptRounds);
+    // O app de origem define o tenant do cliente; o trigger de cadastro grava e
+    // depois ele não muda mais (profiles.tenant_id é imutável para a aplicação).
+    const tenantSlug = tenantFromOrigin(req.headers.origin);
 
     let user;
     try {
       const { rows } = await authQuery(
         `insert into auth.users (email, password_hash, raw_user_meta_data)
-         values ($1, $2, jsonb_build_object('full_name', $3::text))
+         values ($1, $2, jsonb_build_object('full_name', $3::text, 'tenant_slug', $4::text))
          returning id, email, raw_user_meta_data`,
-        [email, passwordHash, fullName],
+        [email, passwordHash, fullName, tenantSlug],
       );
       user = rows[0];
     } catch (error) {
@@ -163,6 +167,17 @@ authRouter.post(
       throw invalid;
     }
 
+    // Cada app só entra com contas do próprio tenant. Mesma resposta genérica (não
+    // revela que a conta existe em outro tenant) e depois da senha, para não
+    // alterar o tempo nem zerar/contar tentativas.
+    const { rows: tenantRows } = await authQuery(
+      `select t.slug from public.profiles p join public.tenants t on t.id = p.tenant_id where p.id = $1`,
+      [user.id],
+    );
+    if ((tenantRows[0]?.slug ?? DEFAULT_TENANT) !== tenantFromOrigin(req.headers.origin)) {
+      throw invalid;
+    }
+
     await authQuery(
       `update auth.users
           set failed_login_attempts = 0, locked_until = null, last_sign_in_at = now()
@@ -219,6 +234,13 @@ export async function issuePasswordReset(email) {
   const user = rows[0];
   if (!user) return false;
 
+  // O link aponta para o app do tenant da pessoa (VARKI recebe link da VARKI).
+  const { rows: tenantRows } = await authQuery(
+    `select t.slug from public.profiles p join public.tenants t on t.id = p.tenant_id where p.id = $1`,
+    [user.id],
+  );
+  const appUrl = appUrlForTenant(tenantRows[0]?.slug);
+
   const token = crypto.randomBytes(32).toString("base64url");
   // Um único link válido por vez: os anteriores ainda abertos são invalidados.
   await authQuery(
@@ -232,7 +254,7 @@ export async function issuePasswordReset(email) {
   );
 
   // O token vai no fragmento (#): não chega a logs de servidor nem ao Referer.
-  const link = `${config.appUrl}/redefinir-senha#token=${token}`;
+  const link = `${appUrl}/redefinir-senha#token=${token}`;
   return sendPasswordResetEmail(user.email, link, RESET_TTL_MINUTES);
 }
 
@@ -354,7 +376,27 @@ authRouter.get(
           group by p.id`,
         [req.userId],
       );
-      return rows[0] ?? null;
+      const profileRow = rows[0] ?? null;
+      if (!profileRow) return null;
+
+      // Tenant do usuário e papel de equipe nele (tenant_staff). O front só usa isto
+      // para mostrar/esconder o painel; quem decide é o banco em cada rota /tenant.
+      const { rows: tenantRows } = await client.query(
+        `select t.slug, t.name,
+                coalesce(array_agg(ts.role) filter (where ts.role is not null), '{}') as staff_roles
+           from public.profiles p
+           join public.tenants t on t.id = p.tenant_id
+           left join public.tenant_staff ts on ts.user_id = p.id and ts.tenant_id = p.tenant_id
+          where p.id = $1
+          group by t.slug, t.name`,
+        [req.userId],
+      );
+      const tenantRow = tenantRows[0];
+      return {
+        ...profileRow,
+        tenant: tenantRow ? { slug: tenantRow.slug, name: tenantRow.name } : null,
+        tenant_roles: tenantRow?.staff_roles ?? [],
+      };
     });
 
     if (!profile) throw new ApiError(404, "Perfil não encontrado");

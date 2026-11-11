@@ -14,6 +14,7 @@ import { installmentPlansRouter } from "./routes/installment-plans.js";
 import { coreRouter } from "./routes/core.js";
 import { webhookRouter } from "./routes/webhook.js";
 import { adminRouter } from "./routes/admin.js";
+import { tenantRouter } from "./routes/tenant.js";
 import { reportsRouter } from "./routes/reports.js";
 
 const app = express();
@@ -68,6 +69,7 @@ app.use("/receivables", receivablesRouter);
 app.use("/installment-plans", installmentPlansRouter);
 app.use("/webhooks", webhookRouter);
 app.use("/admin", adminRouter);
+app.use("/tenant", tenantRouter);
 app.use("/reports", reportsRouter);
 app.use("/", coreRouter);
 
