@@ -983,10 +983,12 @@ e2e local de 29 verificações; regras em SECURITY.md → "Multi-tenant"):
 - **Controle duplo no crédito:** o tenant só **pré-aprova**; quem libera (`verify_receivable`) é a plataforma.
 - reCAPTCHA com 2 secrets (`RECAPTCHA_SECRET` + `RECAPTCHA_SECRET_VARKI`).
 
-**Deploy (humano, nesta ordem):** 1) aplicar a migration em produção (precisa do IP em Trusted
-Sources); 2) variável `TENANT_VARKI_ORIGINS` no `walrus-app`; 3) publicar a API; 4) mover a conta
-`contato@varki.com.br` para o tenant `varki` (`update profiles set tenant_id` como doadmin) e
-conceder `tenant_staff` a quem for operar; 5) publicar o front `varki-app`.
+**Deploy — FEITO em 2026-11-11** (nesta ordem): 1) migration aplicada em produção (dados intactos:
+10 usuários, saldos idênticos); 2) `TENANT_VARKI_ORIGINS` no `walrus-app`; 3) API publicada (`b0b404d`);
+4) conta `contato@varki.com.br` movida para o tenant `varki` (**ninguém** recebeu `tenant_staff`);
+5) front `varki-app` publicado (`8b503a2`). **Pendente:** dar `tenant_staff` a quem for operar
+(só depois dos bloqueantes abaixo); reCAPTCHA do app da VARKI (domínio no Google) para o login funcionar.
+Se o app da VARKI ganhar domínio próprio: acrescentar em `TENANT_VARKI_ORIGINS` (separado por vírgula).
 
 **Bloqueantes antes da operação real da VARKI** (revisão de compliance, 2026-11-11):
 1. Limite de valor / teto de exposição por tenant dentro de `advance_receivable` e dupla aprovação
